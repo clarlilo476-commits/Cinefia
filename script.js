@@ -116,7 +116,6 @@
         }
 
         document.addEventListener('DOMContentLoaded', () => {
-            initProfileSystem();
             initSupabaseAuth();
             initHeroCarousel();
             refreshFilterGenreOptions();
@@ -423,7 +422,8 @@
         }
 
         // --- MINHA LISTA / FAVORITOS ---
-        // getFavoriteItems substituído pela função isolada do sistema de perfil local
+        // Sem login, a lista é apenas de visitante neste navegador. Ela não é um perfil
+        // nem participa da identidade usada nos comentários; com login, a fonte é o Supabase.
 
         function getCurrentFavoriteItems() {
             if (cinefiaAuthUser && cinefiaCloudFavoritesLoadedFor === cinefiaAuthUser.id) {
@@ -1671,7 +1671,7 @@ function renderSupabaseAuthPanel() {
                 <p class="cinefia-auth-muted">Você está conectado à sua conta autenticada.</p>
                 <div class="cinefia-auth-email"><i class="fa-solid fa-envelope" style="color:var(--accent); margin-right:6px;"></i>${email}</div>
                 <div class="cinefia-auth-actions">
-                    <button type="button" class="feature-btn" onclick="importLocalFavoritesToCinefiaCloud()" ${cinefiaAuthBusy ? 'disabled' : ''}><i class="fa-solid fa-cloud-arrow-up"></i> Importar favoritos locais para a nuvem</button>
+                    <button type="button" class="feature-btn" onclick="importLocalFavoritesToCinefiaCloud()" ${cinefiaAuthBusy ? 'disabled' : ''}><i class="fa-solid fa-cloud-arrow-up"></i> Importar favoritos deste navegador</button>
                     <button type="button" class="feature-btn" onclick="signOutCinefia()" ${cinefiaAuthBusy ? 'disabled' : ''}><i class="fa-solid fa-right-from-bracket"></i> Sair da conta</button>
                 </div>
                 <p class="cinefia-cloud-status" data-kind="${escapeCinefiaHtml(cinefiaCloudSyncKind)}"><i class="fa-solid fa-cloud"></i> ${escapeCinefiaHtml(cinefiaCloudSyncMessage)}</p>
@@ -1753,10 +1753,19 @@ async function ensureCinefiaPrivateProfile(user) {
 async function ensureCinefiaPublicProfile(user) {
     if (!cinefiaSupabaseClient || !user?.id) return;
     const shortId = String(user.id).replace(/-/g, '').slice(0, 8).toLowerCase();
-    const displayName = `Cinefia-${shortId}`;
+    let displayName = `Cinefia-${shortId}`;
+    const { data: profile, error: profileError } = await cinefiaSupabaseClient
+        .from('profiles')
+        .select('username')
+        .eq('id', user.id)
+        .maybeSingle();
+    if (!profileError && profile?.username) {
+        const username = String(profile.username).trim();
+        if (username.length >= 3 && username.length <= 32) displayName = username;
+    }
     const { error } = await cinefiaSupabaseClient
         .from('cinefia_public_profiles')
-        .upsert({ user_id: user.id, display_name: displayName }, { onConflict: 'user_id', ignoreDuplicates: true });
+        .upsert({ user_id: user.id, display_name: displayName }, { onConflict: 'user_id' });
     if (error) {
         console.warn('[Cinéfia] Perfil público não sincronizado; execute o SQL de configuração:', error.message);
     }
@@ -1826,10 +1835,10 @@ async function importLocalFavoritesToCinefiaCloud() {
     }
     const local = getFavoriteItems();
     if (!local.length) {
-        setCinefiaCloudStatus('Este perfil local não tem favoritos para importar.', 'info');
+        setCinefiaCloudStatus('Não há favoritos de visitante neste navegador para importar.', 'info');
         return;
     }
-    setCinefiaCloudStatus('Enviando os favoritos deste perfil para sua conta…', 'info');
+    setCinefiaCloudStatus('Enviando os favoritos deste navegador para sua conta…', 'info');
     const rows = local.slice(0, 50).map(item => ({
         user_id: cinefiaAuthUser.id,
         media_type: item.type === 'tv' ? 'tv' : 'movie',
@@ -2139,7 +2148,7 @@ async function signOutCinefia() {
         cinefiaAuthUser = null;
         cinefiaCloudFavorites = [];
         cinefiaCloudFavoritesLoadedFor = null;
-        cinefiaCloudSyncMessage = 'Você saiu da conta; os favoritos exibidos agora são os perfis locais deste navegador.';
+        cinefiaCloudSyncMessage = 'Você saiu da conta; os favoritos exibidos agora são desta sessão de visitante.';
         cinefiaCloudSyncKind = 'info';
         cinefiaAuthMode = 'login';
         cinefiaAuthBusy = false;
@@ -2154,431 +2163,40 @@ async function signOutCinefia() {
     }
 }
 
-function openProfileModalFromOnboarding() {
-    document.getElementById('onboardingModal')?.classList.remove('active');
-    openProfileModal();
+function openProfileModal() {
+    const modal = document.getElementById('profileModal');
+    if (!modal) return;
+    renderSupabaseAuthPanel();
+    modal.classList.add('active');
 }
 
 /* ======================================================================
-   SISTEMA DE PERFIS LOCAIS, QUESTIONÁRIO E PERSONALIZAÇÃO ("SUA EXPERIÊNCIA CINÉFIA")
+   FAVORITOS DE VISITANTE — sem identidade de perfil local
    ====================================================================== */
+const GUEST_FAVORITES_STORAGE_KEY = 'cinefia_guest_favorites_v1';
 
-/* Migração sem perda das preferências locais da marca antiga para a nova. */
-(function migratePreviousBrandStorageKeys() {
-    const migrations = [
-        ['cinevia_local_profiles_v1', 'cinefia_local_profiles_v1', localStorage],
-        ['cinevia_active_profile_id', 'cinefia_active_profile_id', localStorage],
-        ['cinevia_favorites', 'cinefia_favorites', localStorage],
-        ['cinevia_home_page_history', 'cinefia_home_page_history', sessionStorage]
-    ];
-    migrations.forEach(([oldKey, newKey, storage]) => {
-        try {
-            const oldValue = storage.getItem(oldKey);
-            if (oldValue !== null && storage.getItem(newKey) === null) storage.setItem(newKey, oldValue);
-        } catch (error) {
-            console.warn('Não foi possível migrar uma preferência local antiga.', error);
-        }
-    });
-})();
-
-const PROFILES_STORAGE_KEY = 'cinefia_local_profiles_v1';
-const ACTIVE_PROFILE_KEY = 'cinefia_active_profile_id';
-const LEGACY_FAVORITES_KEY = 'cinefia_favorites';
-
-let currentProfile = null;
-let onboardingData = { step: 1, name: '', isVisitor: false, origin: '', purpose: '', genres: [], types: [], storyType: '', era: '' };
-
-function getProfilesFromStorage() {
+function getFavoriteItems() {
     try {
-        return JSON.parse(localStorage.getItem(PROFILES_STORAGE_KEY) || '[]');
-    } catch (e) {
+        const current = JSON.parse(localStorage.getItem(GUEST_FAVORITES_STORAGE_KEY) || 'null');
+        if (Array.isArray(current)) return current;
+
+        // Migra somente a lista de favoritos dos perfis antigos; não recria os perfis.
+        const oldProfiles = JSON.parse(localStorage.getItem('cinefia_local_profiles_v1') || '[]');
+        const migrated = Array.isArray(oldProfiles)
+            ? oldProfiles.flatMap(profile => Array.isArray(profile?.favorites) ? profile.favorites : [])
+            : [];
+        const unique = migrated.filter((item, index, list) =>
+            list.findIndex(other => Number(other?.id) === Number(item?.id) && other?.type === item?.type) === index
+        ).slice(0, 50);
+        localStorage.setItem(GUEST_FAVORITES_STORAGE_KEY, JSON.stringify(unique));
+        return unique;
+    } catch (error) {
+        console.warn('Não foi possível carregar favoritos de visitante.', error);
         return [];
     }
 }
 
-function saveProfilesToStorage(profiles) {
-    localStorage.setItem(PROFILES_STORAGE_KEY, JSON.stringify(profiles));
-}
-
-function getActiveProfileId() {
-    return localStorage.getItem(ACTIVE_PROFILE_KEY);
-}
-
-function setActiveProfileId(id) {
-    localStorage.setItem(ACTIVE_PROFILE_KEY, id);
-}
-
-function initProfileSystem() {
-    let profiles = getProfilesFromStorage();
-    
-    // Migração de favoritos legados se existirem
-    const legacyFavs = localStorage.getItem(LEGACY_FAVORITES_KEY);
-    if (legacyFavs && profiles.length === 0) {
-        try {
-            const parsedFavs = JSON.parse(legacyFavs);
-            if (Array.isArray(parsedFavs) && parsedFavs.length > 0) {
-                const defaultProfile = {
-                    id: 'profile_' + Date.now(),
-                    name: 'Perfil Principal',
-                    isVisitor: false,
-                    createdAt: new Date().toISOString(),
-                    favorites: parsedFavs,
-                    preferences: {},
-                    searchHistory: []
-                };
-                profiles.push(defaultProfile);
-                saveProfilesToStorage(profiles);
-                setActiveProfileId(defaultProfile.id);
-            }
-        } catch (e) {
-            console.warn('Erro ao migrar favoritos antigos:', e);
-        }
-    }
-
-    profiles = getProfilesFromStorage();
-    let activeId = getActiveProfileId();
-
-    if (profiles.length === 0) {
-        // Primeiro acesso sem perfil -> Exibir Onboarding / Tela Inicial de Entrada
-        showFirstAccessOnboarding();
-    } else {
-        currentProfile = profiles.find(p => p.id === activeId) || profiles[0];
-        setActiveProfileId(currentProfile.id);
-        updateActiveProfileUI();
-    }
-}
-
-function updateActiveProfileUI() {
-    const label = document.getElementById('activeProfileLabel');
-    if (label && currentProfile) {
-        label.textContent = currentProfile.name + (currentProfile.isVisitor ? ' (Visitante)' : '');
-    }
-}
-
-function showFirstAccessOnboarding() {
-    onboardingData = { step: 0, name: '', isVisitor: false, origin: '', purpose: '', genres: [], types: [], storyType: '', era: '' };
-    renderOnboardingStep();
-    document.getElementById('onboardingModal').classList.add('active');
-}
-
-function renderOnboardingStep() {
-    const container = document.getElementById('onboardingStepContainer');
-    if (!container) return;
-
-    if (onboardingData.step === 0) {
-        // Escolha inicial: Criar perfil ou Visitante
-        container.innerHTML = `
-            <h2 style="font-family: var(--font-title); color: var(--accent); margin-bottom: 0.8rem; text-align:center;">Bem-vindo ao Cinéfia</h2>
-            <p style="color: var(--text-muted); font-size: 0.95rem; text-align:center; margin-bottom: 1.8rem; line-height: 1.5;">
-                Sua experiência de descoberta de filmes e séries. Como você gostaria de acessar neste navegador?
-            </p>
-            <div style="display: flex; flex-direction: column; gap: 1rem; margin-bottom: 1.5rem;">
-                <div class="card" style="padding: 1.2rem; background: var(--bg-card); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; cursor: pointer;" onclick="startCreateProfile(false)">
-                    <h3 style="color: white; font-size: 1.1rem; margin-bottom: 0.4rem;"><i class="fa-solid fa-user-plus" style="color:var(--accent);"></i> Criar Perfil Local</h3>
-                    <p style="color: var(--text-muted); font-size: 0.85rem;">Personalize suas preferências, listas de favoritos e recomendações guardadas neste navegador.</p>
-                </div>
-                <div class="card" style="padding: 1.2rem; background: var(--bg-card); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; cursor: pointer;" onclick="startCreateProfile(true)">
-                    <h3 style="color: white; font-size: 1.1rem; margin-bottom: 0.4rem;"><i class="fa-solid fa-user-secret" style="color:var(--accent);"></i> Continuar como Visitante</h3>
-                    <p style="color: var(--text-muted); font-size: 0.85rem;">Acesse diretamente sem precisar informar nome. Você poderá salvar favoritos e configurar gostos normalmente neste navegador.</p>
-                </div>
-                <div class="card" style="padding: 1.2rem; background: rgba(244,117,33,.06); border: 1px solid rgba(244,117,33,.35); border-radius: 10px; cursor: pointer;" onclick="openProfileModalFromOnboarding()">
-                    <h3 style="color: white; font-size: 1.1rem; margin-bottom: 0.4rem;"><i class="fa-solid fa-shield-halved" style="color:var(--accent);"></i> Entrar ou criar Conta Cinéfia</h3>
-                    <p style="color: var(--text-muted); font-size: 0.85rem;">Use e-mail e senha para autenticar sua conta. Você ainda pode manter seus perfis locais.</p>
-                </div>
-            </div>
-        `;
-    } else if (onboardingData.step === 1) {
-        // Nome do perfil (se não visitante) + Etapa A: Origem
-        container.innerHTML = `
-            <span style="color:var(--accent); font-weight:800; font-size:0.8rem; text-transform:uppercase; letter-spacing:1px;">Passo 1 de 2</span>
-            <h2 style="font-family: var(--font-title); margin: 0.5rem 0 1rem;">Sua Experiência Cinéfia</h2>
-            
-            ${!onboardingData.isVisitor ? `
-            <div class="settings-field" style="margin-bottom: 1.2rem;">
-                <label for="profileNameInput">Nome do Perfil Local *</label>
-                <input type="text" id="profileNameInput" placeholder="Ex: Lucas, CinemaEmCasa..." value="${onboardingData.name}">
-            </div>
-            ` : ''}
-
-            <div class="settings-field" style="margin-bottom: 1rem;">
-                <label>Como você conheceu o Cinéfia?</label>
-                <select id="originInput" style="padding:0.8rem; background:var(--bg-dark); color:white; border:1px solid rgba(255,255,255,0.1); border-radius:6px;">
-                    <option value="Redes sociais">Redes sociais</option>
-                    <option value="Pesquisa na web">Pesquisa no Google / Buscador</option>
-                    <option value="Indicação de amigos">Indicação de amigos ou familiares</option>
-                    <option value="YouTube ou Criador">YouTube ou Criador de Conteúdo</option>
-                    <option value="Fórum/Comunidade">Fórum ou Comunidade Online</option>
-                    <option value="Outro">Outro</option>
-                    <option value="Prefiro não responder">Prefiro não responder</option>
-                </select>
-            </div>
-
-            <div class="settings-field" style="margin-bottom: 1.5rem;">
-                <label>O que você veio fazer no Cinéfia hoje?</label>
-                <select id="purposeInput" style="padding:0.8rem; background:var(--bg-dark); color:white; border:1px solid rgba(255,255,255,0.1); border-radius:6px;">
-                    <option value="Encontrar algo para assistir">Encontrar algo para assistir</option>
-                    <option value="Descobrir lançamentos">Descobrir lançamentos</option>
-                    <option value="Pesquisar um título">Pesquisar um título específico</option>
-                    <option value="Conferir avaliações">Conferir avaliações</option>
-                    <option value="Explorar recomendações">Explorar recomendações</option>
-                </select>
-            </div>
-
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-                <button class="feature-btn" onclick="skipOnboardingStep(1)">Pular pergunta</button>
-                <button class="save-btn" style="margin-top:0;" onclick="submitOnboardingStep1()">Avançar <i class="fa-solid fa-arrow-right"></i></button>
-            </div>
-        `;
-    } else if (onboardingData.step === 2) {
-        // Etapa B: Preferências de entretenimento
-        const genreList = [
-            { id: 28, name: 'Ação' }, { id: 12, name: 'Aventura' }, { id: 16, name: 'Animação/Anime' },
-            { id: 35, name: 'Comédia' }, { id: 80, name: 'Crime' }, { id: 99, name: 'Documentário' },
-            { id: 18, name: 'Drama' }, { id: 14, name: 'Fantasia' }, { id: 878, name: 'Ficção Científica' },
-            { id: 9648, name: 'Mistério' }, { id: 10749, name: 'Romance' }, { id: 27, name: 'Terror / Suspense' }
-        ];
-
-        let genresHtml = genreList.map(g => `
-            <label class="cat-btn ${onboardingData.genres.includes(g.id) ? 'active' : ''}" style="display:inline-flex; align-items:center; gap:6px; cursor:pointer;">
-                <input type="checkbox" value="${g.id}" ${onboardingData.genres.includes(g.id) ? 'checked' : ''} onchange="toggleGenrePref(${g.id}, this.checked)" style="display:none;">
-                ${g.name}
-            </label>
-        `).join(' ');
-
-        container.innerHTML = `
-            <span style="color:var(--accent); font-weight:800; font-size:0.8rem; text-transform:uppercase; letter-spacing:1px;">Passo 2 de 2</span>
-            <h2 style="font-family: var(--font-title); margin: 0.5rem 0 1rem;">Gostos & Preferências</h2>
-            
-            <p style="color:var(--text-muted); font-size:0.85rem; margin-bottom:0.5rem; font-weight:700;">Quais gêneros você costuma gostar?</p>
-            <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:1.2rem;">
-                ${genresHtml}
-            </div>
-
-            <p style="color:var(--text-muted); font-size:0.85rem; margin-bottom:0.5rem; font-weight:700;">Que tipo de história prefere?</p>
-            <select id="storyTypeInput" style="width:100%; padding:0.8rem; background:var(--bg-dark); color:white; border:1px solid rgba(255,255,255,0.1); border-radius:6px; margin-bottom:1.2rem;">
-                <option value="equilibrada">Equilibrada / Sem preferência</option>
-                <option value="leve">Leve e divertida</option>
-                <option value="intensa">Intensa e emocionante</option>
-                <option value="complexa">Complexa e surpreendente</option>
-            </select>
-
-            <p style="color:var(--text-muted); font-size:0.85rem; margin-bottom:0.5rem; font-weight:700;">Preferência de época:</p>
-            <select id="eraInput" style="width:100%; padding:0.8rem; background:var(--bg-dark); color:white; border:1px solid rgba(255,255,255,0.1); border-radius:6px; margin-bottom:1.5rem;">
-                <option value="ambos">Lançamentos e Clássicos (Ambos)</option>
-                <option value="lancamentos">Mais Lançamentos / Recentes</option>
-                <option value="classicos">Mais Clássicos / Antigos</option>
-            </select>
-
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-                <button class="feature-btn" onclick="skipOnboardingStep(2)">Pular e Concluir</button>
-                <button class="save-btn" style="margin-top:0;" onclick="finishOnboarding()"><i class="fa-solid fa-check"></i> Salvar e Explorar</button>
-            </div>
-        `;
-    }
-}
-
-function startCreateProfile(isVisitor = false) {
-    onboardingData.isVisitor = isVisitor;
-    onboardingData.name = isVisitor ? 'Visitante' : '';
-    onboardingData.step = 1;
-    renderOnboardingStep();
-}
-
-function toggleGenrePref(id, checked) {
-    if (checked) {
-        if (!onboardingData.genres.includes(id)) onboardingData.genres.push(id);
-    } else {
-        onboardingData.genres = onboardingData.genres.filter(g => g !== id);
-    }
-    renderOnboardingStep();
-}
-
-function submitOnboardingStep1() {
-    if (!onboardingData.isVisitor) {
-        const inputName = document.getElementById('profileNameInput')?.value.trim();
-        if (!inputName) {
-            alert('Por favor, informe um nome para o perfil local.');
-            return;
-        }
-        onboardingData.name = inputName;
-    }
-    onboardingData.origin = document.getElementById('originInput')?.value || 'Não informado';
-    onboardingData.purpose = document.getElementById('purposeInput')?.value || 'Não informado';
-    onboardingData.step = 2;
-    renderOnboardingStep();
-}
-
-function skipOnboardingStep(step) {
-    if (step === 1) {
-        if (!onboardingData.isVisitor && !onboardingData.name) onboardingData.name = 'Meu Perfil';
-        onboardingData.step = 2;
-        renderOnboardingStep();
-    } else if (step === 2) {
-        finishOnboarding();
-    }
-}
-
-function finishOnboarding() {
-    onboardingData.storyType = document.getElementById('storyTypeInput')?.value || 'equilibrada';
-    onboardingData.era = document.getElementById('eraInput')?.value || 'ambos';
-
-    const profiles = getProfilesFromStorage();
-    const newProfile = {
-        id: 'profile_' + Date.now(),
-        name: onboardingData.name || (onboardingData.isVisitor ? 'Visitante' : 'Perfil Local'),
-        isVisitor: onboardingData.isVisitor,
-        createdAt: new Date().toISOString(),
-        favorites: [],
-        preferences: {
-            origin: onboardingData.origin,
-            purpose: onboardingData.purpose,
-            genres: onboardingData.genres || [],
-            storyType: onboardingData.storyType,
-            era: onboardingData.era
-        },
-        searchHistory: []
-    };
-
-    profiles.push(newProfile);
-    saveProfilesToStorage(profiles);
-    setActiveProfileId(newProfile.id);
-    currentProfile = newProfile;
-
-    document.getElementById('onboardingModal').classList.remove('active');
-    updateActiveProfileUI();
-    loadHome();
-}
-
-// Gerenciamento e Troca de Perfis
-function openProfileModal() {
-    const modal = document.getElementById('profileModal');
-    const list = document.getElementById('profilesList');
-    const profiles = getProfilesFromStorage();
-    renderSupabaseAuthPanel();
-
-    list.innerHTML = profiles.map(p => `
-        <div style="display:flex; justify-content:space-between; align-items:center; background:var(--bg-dark); padding:10px 14px; border-radius:8px; border: 1px solid ${p.id === currentProfile?.id ? 'var(--accent)' : 'rgba(255,255,255,0.08)'};">
-            <div>
-                <strong style="color:white; font-size:0.95rem;">${p.name} ${p.isVisitor ? '<span style="font-size:0.75rem; color:var(--text-muted);">(Visitante)</span>' : ''}</strong>
-                <div style="font-size:0.78rem; color:var(--text-muted);">${(p.favorites || []).length} favoritos salva(os)</div>
-            </div>
-            <div style="display:flex; gap:6px;">
-                ${p.id !== currentProfile?.id ? `<button class="feature-btn" style="font-size:0.8rem; padding:5px 10px;" onclick="switchProfile('${p.id}')">Ativar</button>` : `<span style="color:var(--accent); font-size:0.8rem; font-weight:800; align-self:center;">Ativo</span>`}
-                <button class="feature-btn" style="font-size:0.8rem; padding:5px 8px; color:#ef4444;" onclick="deleteProfile('${p.id}')"><i class="fa-solid fa-trash"></i></button>
-            </div>
-        </div>
-    `).join('');
-
-    modal.classList.add('active');
-}
-
-function switchProfile(profileId) {
-    const profiles = getProfilesFromStorage();
-    const target = profiles.find(p => p.id === profileId);
-    if (target) {
-        currentProfile = target;
-        setActiveProfileId(target.id);
-        updateActiveProfileUI();
-        forceCloseModal();
-        loadHome();
-    }
-}
-
-function deleteProfile(profileId) {
-    let profiles = getProfilesFromStorage();
-    if (profiles.length <= 1) {
-        alert('É necessário manter pelo menos um perfil local.');
-        return;
-    }
-    if (confirm('Deseja realmente remover este perfil e seus dados locais?')) {
-        profiles = profiles.filter(p => p.id !== profileId);
-        saveProfilesToStorage(profiles);
-        if (currentProfile?.id === profileId) {
-            currentProfile = profiles[0];
-            setActiveProfileId(currentProfile.id);
-        }
-        updateActiveProfileUI();
-        openProfileModal();
-        loadHome();
-    }
-}
-
-function showCreateProfileForm() {
-    forceCloseModal();
-    showFirstAccessOnboarding();
-}
-
-function openPreferencesModal() {
-    if (!currentProfile) return;
-    onboardingData = {
-        step: 2,
-        name: currentProfile.name,
-        isVisitor: currentProfile.isVisitor,
-        genres: currentProfile.preferences?.genres || [],
-        storyType: currentProfile.preferences?.storyType || 'equilibrada',
-        era: currentProfile.preferences?.era || 'ambos'
-    };
-    forceCloseModal();
-    renderOnboardingStep();
-    document.getElementById('onboardingModal').classList.add('active');
-}
-
-function exportProfileBackup() {
-    if (!currentProfile) return;
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(currentProfile, null, 2));
-    const downloadAnchor = document.createElement('a');
-    downloadAnchor.setAttribute("href", dataStr);
-    downloadAnchor.setAttribute("download", `cinefia_profile_${currentProfile.name.toLowerCase().replace(/\s+/g, '_')}.json`);
-    document.body.appendChild(downloadAnchor);
-    downloadAnchor.click();
-    downloadAnchor.remove();
-}
-
-function triggerImportProfileBackup() {
-    document.getElementById('importBackupInput').click();
-}
-
-function importProfileBackup(event) {
-    const file = event.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = function(e) {
-        try {
-            const imported = JSON.parse(e.target.result);
-            if (imported && imported.name) {
-                imported.id = 'profile_' + Date.now();
-                const profiles = getProfilesFromStorage();
-                profiles.push(imported);
-                saveProfilesToStorage(profiles);
-                switchProfile(imported.id);
-                alert('Perfil importado com sucesso!');
-            } else {
-                alert('Arquivo de backup inválido.');
-            }
-        } catch(err) {
-            alert('Erro ao importar backup.');
-        }
-    };
-    reader.readAsText(file);
-}
-
-/* Subtituição de getFavoriteItems / toggleFavorite por Profile Isolation */
-function getFavoriteItems() {
-    if (currentProfile) {
-        return currentProfile.favorites || [];
-    }
-    return [];
-}
-
 function saveFavoriteItems(favorites) {
-    if (currentProfile) {
-        currentProfile.favorites = favorites;
-        const profiles = getProfilesFromStorage();
-        const index = profiles.findIndex(p => p.id === currentProfile.id);
-        if (index >= 0) {
-            profiles[index] = currentProfile;
-            saveProfilesToStorage(profiles);
-        }
-    }
+    localStorage.setItem(GUEST_FAVORITES_STORAGE_KEY, JSON.stringify(Array.isArray(favorites) ? favorites.slice(0, 50) : []));
 }
 
