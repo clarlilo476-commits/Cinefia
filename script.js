@@ -1280,8 +1280,8 @@
                     ${providersHtml}
 
                     <div class="synopsis-section">
-                        <p class="modal-desc">${overview}</p>
-                        ${overview.length > 280 ? `<button class="synopsis-more-btn" onclick="openSynopsisQuadrant()"><i class="fa-solid fa-expand"></i> Mostrar mais</button>` : ''}
+                        <p class="modal-desc synopsis-collapsed">${overview}</p>
+                        ${overview.length > 0 ? `<button class="synopsis-more-btn" type="button" aria-expanded="false" onclick="toggleSynopsis(this)">Mostrar mais</button>` : ''}
                     </div>
 
                     <div class="modal-meta-grid">
@@ -1532,37 +1532,22 @@
         }
 
         // --- MODAIS ---
-        function openSynopsisQuadrant() {
-            const synopsis = document.querySelector('#modalContent .modal-desc');
+        function toggleSynopsis(button) {
+            const synopsis = button?.closest('.synopsis-section')?.querySelector('.modal-desc');
             if (!synopsis) return;
-            let panel = document.getElementById('synopsisQuadrant');
-            if (!panel) {
-                panel = document.createElement('div');
-                panel.id = 'synopsisQuadrant';
-                panel.className = 'synopsis-quadrant';
-                panel.innerHTML = `
-                    <div class="synopsis-quadrant-card" role="dialog" aria-modal="true" aria-labelledby="synopsisQuadrantTitle">
-                        <button class="synopsis-quadrant-close" type="button" aria-label="Fechar sinopse" onclick="closeSynopsisQuadrant()"><i class="fa-solid fa-xmark"></i></button>
-                        <span class="synopsis-quadrant-label">CINÉFIA · SINOPSE</span>
-                        <h3 id="synopsisQuadrantTitle"></h3>
-                        <div class="synopsis-quadrant-text"></div>
-                    </div>`;
-                document.body.appendChild(panel);
-                panel.addEventListener('click', event => { if (event.target === panel) closeSynopsisQuadrant(); });
+            const isCollapsed = synopsis.classList.toggle('synopsis-collapsed');
+            button.textContent = isCollapsed ? 'Mostrar mais' : 'Mostrar menos';
+            button.setAttribute('aria-expanded', String(!isCollapsed));
+        }
+
+        function toggleMobileNavigation() {
+            const isOpen = document.body.classList.toggle('mobile-nav-open');
+            const button = document.querySelector('.mobile-nav-toggle');
+            if (button) {
+                button.setAttribute('aria-expanded', String(isOpen));
+                button.setAttribute('aria-label', isOpen ? 'Fechar menu' : 'Abrir menu');
+                button.innerHTML = `<i class="fa-solid ${isOpen ? 'fa-xmark' : 'fa-ellipsis-vertical'}"></i>`;
             }
-            panel.querySelector('h3').textContent = document.querySelector('#modalContent .modal-title')?.textContent || 'Sinopse';
-            panel.querySelector('.synopsis-quadrant-text').textContent = synopsis.textContent;
-            panel.classList.add('active');
-            document.addEventListener('keydown', synopsisEscapeHandler);
-        }
-
-        function closeSynopsisQuadrant() {
-            document.getElementById('synopsisQuadrant')?.classList.remove('active');
-            document.removeEventListener('keydown', synopsisEscapeHandler);
-        }
-
-        function synopsisEscapeHandler(event) {
-            if (event.key === 'Escape') closeSynopsisQuadrant();
         }
 
         function closeModal(e) {
