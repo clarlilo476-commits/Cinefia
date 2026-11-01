@@ -39,7 +39,7 @@
 
             <div class="nav-title">Sistema</div>
             
-            <a class="nav-link" id="navProfile" onclick="openProfileModal()"><i class="fa-solid fa-user-circle"></i> <span id="activeProfileLabel">Conta e Perfil</span></a>
+            <a class="nav-link" id="navProfile" onclick="openProfileModal()"><i class="fa-solid fa-user-circle"></i> <span id="activeProfileLabel">Conta Cinéfia</span></a>
             <a class="nav-link" id="navSettings" onclick="openSettingsModal()"><i class="fa-solid fa-gear"></i> Configurações</a>
         </nav>
     </aside>
@@ -173,34 +173,15 @@
         <div class="modal-content" style="max-width: 560px; flex-direction: column; padding: 2rem; max-height: 90vh; overflow-y: auto;">
             <button class="modal-close" onclick="forceCloseModal()" aria-label="Fechar"><i class="fa-solid fa-xmark"></i></button>
             <h2 style="font-family: var(--font-title); margin-bottom: 0.5rem; color: var(--accent);">Conta Cinéfia e Perfis</h2>
-            <p style="color: var(--text-muted); font-size: 0.88rem; margin-bottom: 1rem;">Entre com sua conta para autenticação na nuvem. Os perfis locais atuais continuam disponíveis neste dispositivo.</p>
+            <p style="color: var(--text-muted); font-size: 0.88rem; margin-bottom: 1rem;">Use sua conta Cinéfia para comentários, avaliações e favoritos sincronizados na nuvem.</p>
 
             <div id="supabaseAuthPanel" class="cinefia-auth-panel" aria-live="polite">
                 <p class="cinefia-auth-muted">Preparando a conexão segura...</p>
             </div>
 
-            <div class="cinefia-section-divider"><span>PERFIS LOCAIS NESTE DISPOSITIVO</span></div>
-            <div id="profilesList" class="profiles-list-container" style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 1.5rem;"></div>
-
-            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                <button class="save-btn" style="flex: 1; margin-top: 0;" onclick="showCreateProfileForm()"><i class="fa-solid fa-user-plus"></i> Criar Perfil</button>
-                <button class="feature-btn" style="flex: 1;" onclick="openPreferencesModal()"><i class="fa-solid fa-sliders"></i> Editar Preferências</button>
-            </div>
             <div style="margin-top: 1rem; font-size: 0.8rem; color: var(--text-muted); text-align: center;">
-                <span id="profileNoticeText">Comentários e avaliações são compartilhados pela nuvem. Com login, a Minha Lista usa os favoritos da conta; favoritos locais antigos podem ser importados pelo botão da conta.</span>
+                <span id="profileNoticeText">O nome exibido nos comentários vem do username da sua conta. Sem login, os favoritos ficam apenas neste navegador.</span>
             </div>
-            <div style="margin-top: 0.8rem; display: flex; gap: 10px; justify-content: center;">
-                <button class="feature-btn" style="font-size: 0.78rem; padding: 5px 10px;" onclick="exportProfileBackup()"><i class="fa-solid fa-download"></i> Exportar Backup</button>
-                <button class="feature-btn" style="font-size: 0.78rem; padding: 5px 10px;" onclick="triggerImportProfileBackup()"><i class="fa-solid fa-upload"></i> Importar Backup</button>
-                <input type="file" id="importBackupInput" accept=".json" style="display:none;" onchange="importProfileBackup(event)">
-            </div>
-        </div>
-    </div>
-
-    <!-- MODAL DE ONBOARDING / QUESTIONÁRIO -->
-    <div class="modal-overlay" id="onboardingModal">
-        <div class="modal-content" style="max-width: 600px; flex-direction: column; padding: 2.2rem; max-height: 85vh; overflow-y: auto;">
-            <div id="onboardingStepContainer"></div>
         </div>
     </div>
 
