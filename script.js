@@ -1686,6 +1686,13 @@ function renderSupabaseAuthPanel() {
         <h3 class="cinefia-auth-title"><i class="fa-solid fa-shield-halved" style="color:var(--accent)"></i> ${isSignup ? 'Criar conta Cinéfia' : 'Entrar na sua conta'}</h3>
         <p class="cinefia-auth-muted">${isSignup ? 'Crie uma conta com e-mail e senha. A confirmação por e-mail pode ser solicitada pelo Supabase.' : 'Entre com seu e-mail e senha para autenticar sua conta na nuvem.'}</p>
         <form class="cinefia-auth-form" onsubmit="${isSignup ? 'handleCinefiaSignup(event)' : 'handleCinefiaLogin(event)'}">
+            ${isSignup ? `
+                <div class="cinefia-auth-field">
+                    <label for="cinefiaAuthUsername">Nome de usuário</label>
+                    <input id="cinefiaAuthUsername" name="username" type="text" autocomplete="username" minlength="3" maxlength="20" pattern="[a-z0-9_]{3,20}" placeholder="ex: davi_cine" required>
+                    <small class="cinefia-auth-muted">Use apenas letras minúsculas, números e _.</small>
+                </div>
+            ` : ''}
             <div class="cinefia-auth-field">
                 <label for="cinefiaAuthEmail">E-mail</label>
                 <input id="cinefiaAuthEmail" name="email" type="email" autocomplete="email" maxlength="254" placeholder="voce@exemplo.com" required>
@@ -1729,6 +1736,7 @@ function setCinefiaAuthBusy(isBusy) {
 
 function normalizeCinefiaAuthError(error, action) {
     const raw = String(error?.message || '').toLowerCase();
+    if (raw.includes('profiles_username_key') || (raw.includes('username') && (raw.includes('duplicate') || raw.includes('unique')))) return 'Esse nome de usuário já está em uso. Escolha outro.';
     if (raw.includes('invalid login credentials')) return 'E-mail ou senha incorretos. Confira os dados e tente novamente.';
     if (raw.includes('email not confirmed')) return 'Confirme seu e-mail pelo link enviado antes de entrar.';
     if (raw.includes('user already registered')) return 'Não foi possível concluir o cadastro com esses dados. Tente entrar ou use outro e-mail.';
@@ -2053,15 +2061,21 @@ async function handleCinefiaSignup(event) {
     event.preventDefault();
     if (!cinefiaSupabaseClient || cinefiaAuthBusy) return;
     const email = document.getElementById('cinefiaAuthEmail')?.value.trim() || '';
+    const username = document.getElementById('cinefiaAuthUsername')?.value.trim().toLowerCase() || '';
     const password = document.getElementById('cinefiaAuthPassword')?.value || '';
     const confirmPassword = document.getElementById('cinefiaAuthConfirmPassword')?.value || '';
-    if (!email || !password || !confirmPassword) return setCinefiaAuthMessage('Preencha todos os campos.', 'error');
+    if (!email || !username || !password || !confirmPassword) return setCinefiaAuthMessage('Preencha todos os campos.', 'error');
+    if (!/^[a-z0-9_]{3,20}$/.test(username)) return setCinefiaAuthMessage('O nome de usuário deve ter de 3 a 20 caracteres: apenas letras minúsculas, números e _.', 'error');
     if (password.length < 10) return setCinefiaAuthMessage('Use uma senha com pelo menos 10 caracteres.', 'error');
     if (password !== confirmPassword) return setCinefiaAuthMessage('As senhas não são iguais. Confira e tente novamente.', 'error');
     setCinefiaAuthBusy(true);
     setCinefiaAuthMessage('Criando sua conta...', 'info');
     try {
-        const { data, error } = await cinefiaSupabaseClient.auth.signUp({ email, password });
+        const { data, error } = await cinefiaSupabaseClient.auth.signUp({
+            email,
+            password,
+            options: { data: { user_name: username, username } }
+        });
         if (error) throw error;
         cinefiaAuthBusy = false;
         if (data.session?.user) {
