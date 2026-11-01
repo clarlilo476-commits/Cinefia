@@ -1281,7 +1281,7 @@
 
                     <div class="synopsis-section">
                         <p class="modal-desc synopsis-collapsed">${overview}</p>
-                        ${overview.length > 0 ? `<button class="synopsis-more-btn" type="button" aria-expanded="false" onclick="toggleSynopsis(this)">Mostrar mais</button>` : ''}
+                        ${overview.length > 0 ? `<button class="synopsis-more-btn" type="button" style="display:none" onclick="openSynopsisQuadrant()"><i class="fa-solid fa-expand"></i> Mostrar mais</button>` : ''}
                     </div>
 
                     <div class="modal-meta-grid">
@@ -1298,6 +1298,14 @@
                     ${advancedHtml}
                 </div>
             `;
+
+            requestAnimationFrame(() => {
+                const synopsis = content.querySelector('.modal-desc');
+                const moreButton = content.querySelector('.synopsis-more-btn');
+                if (synopsis && moreButton && synopsis.scrollHeight > synopsis.clientHeight + 1) {
+                    moreButton.style.display = 'inline-flex';
+                }
+            });
 
             // Info, episódios e elenco são painéis exclusivos: apenas um pode ficar aberto.
             const expandableItems = Array.from(content.querySelectorAll('.expandable-details'));
@@ -1532,12 +1540,35 @@
         }
 
         // --- MODAIS ---
-        function toggleSynopsis(button) {
-            const synopsis = button?.closest('.synopsis-section')?.querySelector('.modal-desc');
+        function openSynopsisQuadrant() {
+            const synopsis = document.querySelector('#modalContent .modal-desc');
             if (!synopsis) return;
-            const isCollapsed = synopsis.classList.toggle('synopsis-collapsed');
-            button.textContent = isCollapsed ? 'Mostrar mais' : 'Mostrar menos';
-            button.setAttribute('aria-expanded', String(!isCollapsed));
+            let panel = document.getElementById('synopsisQuadrant');
+            if (!panel) {
+                panel = document.createElement('div');
+                panel.id = 'synopsisQuadrant';
+                panel.className = 'synopsis-quadrant';
+                panel.innerHTML = `
+                    <section class="synopsis-quadrant-card" role="dialog" aria-modal="true" aria-labelledby="synopsisQuadrantTitle">
+                        <button class="synopsis-quadrant-close" type="button" aria-label="Fechar sinopse" onclick="closeSynopsisQuadrant()"><i class="fa-solid fa-xmark"></i></button>
+                        <h2 class="synopsis-quadrant-title" id="synopsisQuadrantTitle">Sinopse</h2>
+                        <div class="synopsis-quadrant-text"></div>
+                    </section>`;
+                document.body.appendChild(panel);
+                panel.addEventListener('click', event => { if (event.target === panel) closeSynopsisQuadrant(); });
+            }
+            panel.querySelector('.synopsis-quadrant-text').textContent = synopsis.textContent;
+            panel.classList.add('active');
+            document.addEventListener('keydown', synopsisEscapeHandler);
+        }
+
+        function closeSynopsisQuadrant() {
+            document.getElementById('synopsisQuadrant')?.classList.remove('active');
+            document.removeEventListener('keydown', synopsisEscapeHandler);
+        }
+
+        function synopsisEscapeHandler(event) {
+            if (event.key === 'Escape') closeSynopsisQuadrant();
         }
 
         function toggleMobileNavigation() {
