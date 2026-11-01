@@ -13,8 +13,46 @@
     <link rel="icon" href="favicon.png" type="image/png" sizes="256x256">
     <link rel="apple-touch-icon" href="favicon.png">
     <link rel="stylesheet" href="style.css">
+    <style>
+        .modal-desc.synopsis-collapsed {
+            display: -webkit-box;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 5;
+            line-clamp: 5;
+            overflow: hidden;
+        }
+        .mobile-nav-toggle {
+            display: none;
+            position: fixed;
+            z-index: 1100;
+            top: 12px;
+            left: 12px;
+            width: 44px;
+            height: 44px;
+            border: 1px solid rgba(255,255,255,.18);
+            border-radius: 10px;
+            color: white;
+            background: #171522;
+            font-size: 1.2rem;
+        }
+        @media (max-width: 700px) {
+            .mobile-nav-toggle { display: block; }
+            body.mobile-nav-open .sidebar { transform: translateX(0); z-index: 1050; }
+            .sidebar { transition: transform .25s ease; }
+            #resultsGrid {
+                display: grid !important;
+                grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+                gap: 12px !important;
+            }
+            #resultsGrid .card { min-width: 0; width: 100%; }
+            #resultsGrid .card-img { width: 100%; height: auto; aspect-ratio: 2 / 3; object-fit: cover; }
+            body { padding-top: 54px; }
+        }
+    </style>
 </head>
 <body>
+
+    <button class="mobile-nav-toggle" type="button" aria-label="Abrir menu" aria-expanded="false" onclick="toggleMobileNavigation()"><i class="fa-solid fa-ellipsis-vertical"></i></button>
 
     <aside class="sidebar">
         <a href="#" class="brand" onclick="loadHome()">
