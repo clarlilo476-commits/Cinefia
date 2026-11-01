@@ -117,6 +117,14 @@
 
         document.addEventListener('DOMContentLoaded', () => {
             initSupabaseAuth();
+            window.addEventListener('resize', refreshSynopsisControl);
+            document.querySelectorAll('.nav-menu .nav-link').forEach(link => {
+                link.addEventListener('click', () => {
+                    if (window.matchMedia('(max-width: 700px)').matches && document.body.classList.contains('mobile-nav-open')) {
+                        toggleMobileNavigation();
+                    }
+                });
+            });
             initHeroCarousel();
             refreshFilterGenreOptions();
             updateMyListCount();
@@ -1299,13 +1307,7 @@
                 </div>
             `;
 
-            requestAnimationFrame(() => {
-                const synopsis = content.querySelector('.modal-desc');
-                const moreButton = content.querySelector('.synopsis-more-btn');
-                if (synopsis && moreButton && synopsis.scrollHeight > synopsis.clientHeight + 1) {
-                    moreButton.style.display = 'inline-flex';
-                }
-            });
+            requestAnimationFrame(refreshSynopsisControl);
 
             // Info, episódios e elenco são painéis exclusivos: apenas um pode ficar aberto.
             const expandableItems = Array.from(content.querySelectorAll('.expandable-details'));
@@ -1540,6 +1542,13 @@
         }
 
         // --- MODAIS ---
+        function refreshSynopsisControl() {
+            const synopsis = document.querySelector('#modalContent .modal-desc');
+            const moreButton = document.querySelector('#modalContent .synopsis-more-btn');
+            if (!synopsis || !moreButton) return;
+            moreButton.style.display = synopsis.scrollHeight > synopsis.clientHeight + 1 ? 'inline-flex' : 'none';
+        }
+
         function openSynopsisQuadrant() {
             const synopsis = document.querySelector('#modalContent .modal-desc');
             if (!synopsis) return;
@@ -1752,7 +1761,7 @@ function setCinefiaAuthBusy(isBusy) {
 
 function normalizeCinefiaAuthError(error, action) {
     const raw = String(error?.message || '').toLowerCase();
-    if (raw.includes('profiles_username_key') || (raw.includes('username') && (raw.includes('duplicate') || raw.includes('unique')))) return 'Esse nome de usuário já está em uso. Escolha outro.';
+    if (raw.includes('profiles_username_key') || raw.includes('duplicate key') || (raw.includes('username') && (raw.includes('duplicate') || raw.includes('unique')))) return 'Esse nome de usuário já está em uso. Escolha outro.';
     if (raw.includes('invalid login credentials')) return 'E-mail ou senha incorretos. Confira os dados e tente novamente.';
     if (raw.includes('email not confirmed')) return 'Confirme seu e-mail pelo link enviado antes de entrar.';
     if (raw.includes('user already registered')) return 'Não foi possível concluir o cadastro com esses dados. Tente entrar ou use outro e-mail.';
@@ -2087,6 +2096,19 @@ async function handleCinefiaSignup(event) {
     setCinefiaAuthBusy(true);
     setCinefiaAuthMessage('Criando sua conta...', 'info');
     try {
+        const { data: existingProfiles, error: usernameCheckError } = await cinefiaSupabaseClient
+            .from('profiles')
+            .select('username');
+        if (usernameCheckError) throw usernameCheckError;
+        const usernameTaken = (existingProfiles || []).some(profile =>
+            String(profile.username || '').trim().toLowerCase() === username
+        );
+        if (usernameTaken) {
+            cinefiaAuthBusy = false;
+            renderSupabaseAuthPanel();
+            setCinefiaAuthMessage('Esse nome de usuário já está em uso. Escolha outro.', 'error');
+            return;
+        }
         const { data, error } = await cinefiaSupabaseClient.auth.signUp({
             email,
             password,
