@@ -298,6 +298,12 @@
             <!-- Conteúdo será injetado aqui via JS -->
         </div>
     </div>
+    <div class="detail-side-overlay" id="detailSideOverlay" onclick="if(event.target === this) closeDetailSidePanel()" aria-hidden="true">
+        <aside class="detail-side-panel" role="dialog" aria-modal="true" aria-label="Detalhes adicionais">
+            <div class="detail-side-heading"><h3 id="detailSideTitle">Informações</h3><button type="button" onclick="closeDetailSidePanel()" aria-label="Fechar painel"><i class="fa-solid fa-xmark"></i></button></div>
+            <div class="detail-side-content" id="detailSideContent"></div>
+        </aside>
+    </div>
 
     <!-- MODAL DE CONFIGURAÇÕES -->
     
