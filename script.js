@@ -340,6 +340,11 @@
             let url = '';
 
             if (currentMode === 'home') {
+                if (currentPage === 1 && cinefiaAuthUser && cinefiaAccountPreferences && (cinefiaAccountPreferences.genres.length || cinefiaAccountPreferences.providers.length)) {
+                    document.getElementById('sectionTitle').innerText = 'Em destaque para você';
+                    await fetchPersonalizedHomeMix();
+                    return;
+                }
                 // Faixas de página da Home: 1–5 melhores lançamentos do ano, 5–10 melhores avaliados, 10–15 somente filmes.
                 try {
                     if (currentPage <= 5) {
@@ -531,8 +536,19 @@
             const grid = document.getElementById('resultsGrid');
             const pagination = document.getElementById('paginationContainer');
             pagination.style.display = 'none';
+            if (!cinefiaAuthUser) {
+                grid.innerHTML = '<div class="message-box"><i class="fa-solid fa-lock" style="color:var(--accent);font-size:2rem;margin-bottom:12px;"></i><br>Recomendados é uma função exclusiva das contas Cinéfia.<br><span style="font-size:.9rem;">Entre ou cadastre-se para configurar seus gostos.</span><br><button class="feature-btn" style="margin-top:14px;" onclick="openProfileModal()"><i class="fa-solid fa-right-to-bracket"></i> Entrar ou cadastrar</button></div>';
+                return;
+            }
             const favorites = getCurrentFavoriteItems();
             try {
+                if (cinefiaAuthUser && cinefiaAccountPreferences && (cinefiaAccountPreferences.genres.length || cinefiaAccountPreferences.providers.length)) {
+                    const personalized = await fetchPreferenceDiscoverResults(24);
+                    if (personalized.length) {
+                        renderGrid(personalized);
+                        return;
+                    }
+                }
                 let pool = [];
                 const seeds = favorites.slice(0, 5);
                 if (seeds.length) {
@@ -1604,11 +1620,13 @@
             document.getElementById('settingsModal')?.classList.remove('active');
             document.getElementById('profileModal')?.classList.remove('active');
             document.getElementById('onboardingModal')?.classList.remove('active');
+            document.getElementById('cinefiaExperienceOnboarding')?.classList.remove('active');
         }
 
         function openSettingsModal() {
             document.getElementById('settingsModal').classList.add('active');
             document.getElementById('apiKeyInput').value = TMDB_API_KEY;
+            renderCinefiaExperienceSettings();
         }
 
         function saveSettings() {
@@ -2002,6 +2020,137 @@ async function submitCinefiaComment(event, tmdbId, mediaType) {
     await loadCinefiaComments(Number(tmdbId), mediaType);
 }
 
+const CINEFIA_SITE_URL = 'https://clarlilo476-commits.github.io/Cinefia/';
+const CINEFIA_GUEST_EXPERIENCE_KEY = 'cinefia_guest_experience_v1';
+const CINEFIA_INTRO_SESSION_KEY = 'cinefia_intro_seen_v1';
+let cinefiaAccountPreferences = null;
+let cinefiaPreferencesLoadedFor = null;
+const CINEFIA_PREFERENCE_GENRES = [
+    [28, 'Ação'], [12, 'Aventura'], [16, 'Animação'], [35, 'Comédia'], [80, 'Crime'], [99, 'Documentário'],
+    [18, 'Drama'], [10751, 'Família'], [14, 'Fantasia'], [36, 'História'], [27, 'Terror'], [10402, 'Música'],
+    [9648, 'Mistério'], [10749, 'Romance'], [878, 'Ficção científica'], [53, 'Suspense'], [10752, 'Guerra'], [37, 'Faroeste']
+];
+const CINEFIA_PREFERENCE_PROVIDERS = [
+    [8, 'Netflix'], [119, 'Prime Video'], [337, 'Disney+'], [1899, 'Max'], [307, 'Globoplay'], [350, 'Apple TV+'], [531, 'Paramount+'], [283, 'Crunchyroll']
+];
+const CINEFIA_ORIGIN_OPTIONS = ['Indicação de amigo(a)', 'Google ou outro buscador', 'Redes sociais', 'Vídeo ou postagem', 'Já conhecia o projeto', 'Outro'];
+const CINEFIA_PURPOSE_OPTIONS = ['Descobrir filmes e séries', 'Encontrar onde assistir', 'Guardar minha lista', 'Ler e publicar avaliações', 'Explorar recomendações', 'Outro'];
+
+function defaultCinefiaPreferences() { return { origin: '', purpose: '', genres: [], providers: [] }; }
+function normalizeCinefiaPreferences(row = {}) {
+    const safeIds = (value, allowed) => (Array.isArray(value) ? value : []).map(Number).filter(id => allowed.some(([allowedId]) => allowedId === id));
+    return { origin: String(row.origin || ''), purpose: String(row.purpose || ''), genres: safeIds(row.genres, CINEFIA_PREFERENCE_GENRES), providers: safeIds(row.providers, CINEFIA_PREFERENCE_PROVIDERS) };
+}
+function cinefiaPreferenceLabel(list, id) { return list.find(([value]) => value === Number(id))?.[1] || ''; }
+
+async function loadCinefiaPreferences(user = cinefiaAuthUser) {
+    if (!user?.id || !cinefiaSupabaseClient) { cinefiaAccountPreferences = null; cinefiaPreferencesLoadedFor = null; return null; }
+    const { data, error } = await cinefiaSupabaseClient.from('cinefia_preferences').select('origin,purpose,genres,providers').eq('user_id', user.id).maybeSingle();
+    if (error) { console.warn('[Cinéfia] Preferências indisponíveis; execute a migração SQL:', error.message); cinefiaAccountPreferences = defaultCinefiaPreferences(); cinefiaPreferencesLoadedFor = user.id; return cinefiaAccountPreferences; }
+    cinefiaAccountPreferences = normalizeCinefiaPreferences(data || {});
+    cinefiaPreferencesLoadedFor = user.id;
+    return cinefiaAccountPreferences;
+}
+
+async function saveCinefiaPreferences(preferences, feedbackNode) {
+    if (!cinefiaSupabaseClient || !cinefiaAuthUser?.id) { if (feedbackNode) feedbackNode.textContent = 'Entre na sua conta para salvar suas preferências.'; return false; }
+    const normalized = normalizeCinefiaPreferences(preferences);
+    const { error } = await cinefiaSupabaseClient.from('cinefia_preferences').upsert({ user_id: cinefiaAuthUser.id, ...normalized, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+    if (error) { if (feedbackNode) feedbackNode.textContent = getCinefiaSupabaseTableErrorMessage(error, 'preferências da Experiência Cinéfia'); return false; }
+    cinefiaAccountPreferences = normalized;
+    cinefiaPreferencesLoadedFor = cinefiaAuthUser.id;
+    if (feedbackNode) { feedbackNode.textContent = 'Preferências salvas com sucesso.'; feedbackNode.style.color = '#4ade80'; }
+    return true;
+}
+
+function preferenceCheckboxes(list, name, selected) {
+    return list.map(([id, label]) => `<label class="cinefia-preference-option"><input type="checkbox" name="${name}" value="${id}" ${selected.includes(id) ? 'checked' : ''}> ${escapeCinefiaHtml(label)}</label>`).join('');
+}
+
+function renderCinefiaExperienceSettings() {
+    const target = document.getElementById('cinefiaExperienceSettings');
+    if (!target) return;
+    if (!cinefiaAuthUser) {
+        target.innerHTML = `<section class="cinefia-experience-settings"><h3><i class="fa-solid fa-sparkles"></i> Experiência Cinéfia</h3><p>Entre em uma conta Cinéfia para salvar gêneros e serviços favoritos e receber recomendações personalizadas.</p><button class="feature-btn" type="button" onclick="openProfileModal()"><i class="fa-solid fa-right-to-bracket"></i> Entrar ou cadastrar</button></section>`;
+        return;
+    }
+    const prefs = cinefiaAccountPreferences || defaultCinefiaPreferences();
+    target.innerHTML = `<section class="cinefia-experience-settings"><h3><i class="fa-solid fa-sparkles"></i> Experiência Cinéfia</h3><p>Escolha seus gêneros e serviços. A aba Recomendados usará essas escolhas; a Home combinará suas preferências com conteúdos gerais.</p><div class="cinefia-preference-group"><label>Gêneros favoritos</label><div class="cinefia-preference-options">${preferenceCheckboxes(CINEFIA_PREFERENCE_GENRES, 'cinefiaGenre', prefs.genres)}</div></div><div class="cinefia-preference-group"><label>Serviços de streaming</label><div class="cinefia-preference-options">${preferenceCheckboxes(CINEFIA_PREFERENCE_PROVIDERS, 'cinefiaProvider', prefs.providers)}</div></div><div class="cinefia-auth-actions" style="margin-top:1rem"><button class="save-btn" type="button" onclick="saveCinefiaExperienceSettings()"><i class="fa-solid fa-check"></i> Salvar preferências</button><span id="cinefiaPreferencesFeedback" class="cinefia-auth-message" aria-live="polite"></span></div></section>`;
+}
+
+async function saveCinefiaExperienceSettings() {
+    const preferences = { ...(cinefiaAccountPreferences || defaultCinefiaPreferences()), genres: [...document.querySelectorAll('input[name="cinefiaGenre"]:checked')].map(node => Number(node.value)), providers: [...document.querySelectorAll('input[name="cinefiaProvider"]:checked')].map(node => Number(node.value)) };
+    const feedback = document.getElementById('cinefiaPreferencesFeedback');
+    if (await saveCinefiaPreferences(preferences, feedback)) { currentPage = 1; if (currentMode === 'home' || currentMode === 'recommendations') fetchContent(); }
+}
+
+function renderCinefiaOnboarding() {
+    const body = document.getElementById('cinefiaExperienceOnboardingBody');
+    if (!body) return;
+    body.innerHTML = `<h2 style="font-family:var(--font-title); color:var(--accent); margin-bottom:.4rem;"><i class="fa-solid fa-wand-magic-sparkles"></i> Sua primeira experiência</h2><p style="color:var(--text-muted); line-height:1.5; margin-bottom:1.2rem;">Conte um pouco sobre você para ajudarmos a organizar o Cinéfia. Você poderá alterar isso depois nas configurações.</p><form class="settings-form" onsubmit="saveCinefiaOnboarding(event)"><div class="cinefia-onboarding-options"><div class="settings-field"><label for="cinefiaOrigin">Como você conheceu o Cinéfia?</label><select id="cinefiaOrigin" required><option value="">Selecione uma opção</option>${CINEFIA_ORIGIN_OPTIONS.map(value => `<option value="${escapeCinefiaHtml(value)}">${escapeCinefiaHtml(value)}</option>`).join('')}</select></div><div class="settings-field"><label for="cinefiaPurpose">O que pretende fazer aqui?</label><select id="cinefiaPurpose" required><option value="">Selecione uma opção</option>${CINEFIA_PURPOSE_OPTIONS.map(value => `<option value="${escapeCinefiaHtml(value)}">${escapeCinefiaHtml(value)}</option>`).join('')}</select></div></div><p id="cinefiaOnboardingFeedback" class="cinefia-auth-message" aria-live="polite"></p><button class="save-btn" type="submit"><i class="fa-solid fa-arrow-right"></i> Continuar</button></form>`;
+    const existing = cinefiaAuthUser ? (cinefiaAccountPreferences || {}) : (() => { try { return JSON.parse(localStorage.getItem(CINEFIA_GUEST_EXPERIENCE_KEY) || '{}'); } catch (_) { return {}; } })();
+    if (existing.origin) document.getElementById('cinefiaOrigin').value = existing.origin;
+    if (existing.purpose) document.getElementById('cinefiaPurpose').value = existing.purpose;
+}
+
+async function saveCinefiaOnboarding(event) {
+    event.preventDefault();
+    const origin = document.getElementById('cinefiaOrigin')?.value || '';
+    const purpose = document.getElementById('cinefiaPurpose')?.value || '';
+    const feedback = document.getElementById('cinefiaOnboardingFeedback');
+    if (!origin || !purpose) { if (feedback) feedback.textContent = 'Selecione as duas opções para continuar.'; return; }
+    if (cinefiaAuthUser) {
+        const ok = await saveCinefiaPreferences({ ...(cinefiaAccountPreferences || defaultCinefiaPreferences()), origin, purpose }, feedback);
+        if (!ok) return;
+    } else localStorage.setItem(CINEFIA_GUEST_EXPERIENCE_KEY, JSON.stringify({ origin, purpose, completedAt: new Date().toISOString() }));
+    closeCinefiaExperienceOnboarding();
+}
+
+function closeCinefiaExperienceOnboarding() { document.getElementById('cinefiaExperienceOnboarding')?.classList.remove('active'); }
+async function playCinefiaExperienceIntro() {
+    const overlay = document.getElementById('cinefiaExperienceIntro');
+    if (!overlay) return;
+    overlay.classList.add('active'); overlay.setAttribute('aria-hidden', 'false');
+    await new Promise(resolve => setTimeout(resolve, 1700));
+    overlay.classList.add('leaving');
+    await new Promise(resolve => setTimeout(resolve, 1150));
+    overlay.classList.remove('active', 'leaving'); overlay.setAttribute('aria-hidden', 'true');
+}
+async function maybeStartCinefiaExperience(user) {
+    const introKey = `${CINEFIA_INTRO_SESSION_KEY}_${user?.id || 'guest'}`;
+    if (sessionStorage.getItem(introKey) !== '1') { sessionStorage.setItem(introKey, '1'); await playCinefiaExperienceIntro(); }
+    if (user) {
+        await loadCinefiaPreferences(user);
+        if (!cinefiaAccountPreferences?.origin || !cinefiaAccountPreferences?.purpose) { renderCinefiaOnboarding(); document.getElementById('cinefiaExperienceOnboarding')?.classList.add('active'); }
+    } else {
+        let guest = null; try { guest = JSON.parse(localStorage.getItem(CINEFIA_GUEST_EXPERIENCE_KEY) || 'null'); } catch (_) {}
+        if (!guest?.origin || !guest?.purpose) { renderCinefiaOnboarding(); document.getElementById('cinefiaExperienceOnboarding')?.classList.add('active'); }
+    }
+}
+
+function preferenceDiscoverUrl(type, page = 1, extra = '') {
+    const prefs = cinefiaAccountPreferences || defaultCinefiaPreferences();
+    const genreIds = prefs.genres.join('|');
+    const providerIds = prefs.providers.join('|');
+    const providerFilter = providerIds ? `&with_watch_providers=${providerIds}&watch_region=BR&with_watch_monetization_types=flatrate` : '';
+    const genreFilter = genreIds ? `&with_genres=${genreIds}` : '';
+    return `${BASE_URL}/discover/${type}?api_key=${TMDB_API_KEY}&language=pt-BR&sort_by=popularity.desc&vote_count.gte=30&page=${page}${genreFilter}${providerFilter}${extra}`;
+}
+async function fetchPreferenceDiscoverResults(limit = 24) {
+    if (!cinefiaAccountPreferences || (!cinefiaAccountPreferences.genres.length && !cinefiaAccountPreferences.providers.length)) return [];
+    const [movieData, tvData] = await Promise.all([fetch(preferenceDiscoverUrl('movie')).then(r => r.json()), fetch(preferenceDiscoverUrl('tv')).then(r => r.json())]);
+    const items = [...(movieData.results || []).map(item => ({ ...item, media_type: 'movie' })), ...(tvData.results || []).map(item => ({ ...item, media_type: 'tv' }))].filter(item => item.poster_path);
+    return items.sort((a, b) => (b.vote_average || 0) - (a.vote_average || 0)).slice(0, limit);
+}
+async function fetchPersonalizedHomeMix() {
+    const [personalized, generalData] = await Promise.all([fetchPreferenceDiscoverResults(16), fetch(`${BASE_URL}/trending/all/week?api_key=${TMDB_API_KEY}&language=pt-BR&page=1`).then(r => r.json())]);
+    const general = (generalData.results || []).filter(item => item.poster_path).map(item => ({ ...item, media_type: item.media_type || (item.title ? 'movie' : 'tv') }));
+    const seen = new Set(); const mixed = [];
+    [...personalized.slice(0, 16), ...general.slice(0, 8)].forEach(item => { const key = `${item.media_type}-${item.id}`; if (!seen.has(key)) { seen.add(key); mixed.push(item); } });
+    renderGrid(mixed.slice(0, 24));
+    totalPages = 1; updatePagination();
+}
+
 async function initSupabaseAuth() {
     const panel = document.getElementById('supabaseAuthPanel');
     try {
@@ -2011,16 +2160,24 @@ async function initSupabaseAuth() {
         const { data, error } = await cinefiaSupabaseClient.auth.getSession();
         if (error) throw error;
         cinefiaAuthUser = data.session?.user || null;
+        const authRedirectType = new URLSearchParams(window.location.hash.replace(/^#/, '')).get('type');
+        if (authRedirectType === 'signup' || authRedirectType === 'email') {
+            cinefiaAuthMessage = 'E-mail confirmado com sucesso. Sua conta Cinéfia está pronta.';
+            cinefiaAuthMessageKind = 'success';
+            try { window.history.replaceState({}, document.title, window.location.pathname + window.location.search); } catch (_) {}
+        }
         renderSupabaseAuthPanel();
         if (cinefiaAuthUser) {
             await ensureCinefiaPrivateProfile(cinefiaAuthUser);
             await ensureCinefiaPublicProfile(cinefiaAuthUser);
             renderSupabaseAuthPanel();
             await loadCinefiaCloudFavorites();
+            await maybeStartCinefiaExperience(cinefiaAuthUser);
         } else {
             cinefiaCloudFavorites = [];
             cinefiaCloudFavoritesLoadedFor = null;
             renderSupabaseAuthPanel();
+            await maybeStartCinefiaExperience(null);
         }
         if (!cinefiaAuthSubscription) {
             const { data: subscriptionData } = cinefiaSupabaseClient.auth.onAuthStateChange((_event, session) => {
@@ -2038,7 +2195,10 @@ async function initSupabaseAuth() {
                     void ensureCinefiaPrivateProfile(nextUser);
                     void ensureCinefiaPublicProfile(nextUser);
                     void loadCinefiaCloudFavorites();
+                    void maybeStartCinefiaExperience(nextUser);
                 } else {
+                    cinefiaAccountPreferences = null;
+                    cinefiaPreferencesLoadedFor = null;
                     updateMyListCount();
                     renderCurrentListState();
                 }
@@ -2112,7 +2272,7 @@ async function handleCinefiaSignup(event) {
         const { data, error } = await cinefiaSupabaseClient.auth.signUp({
             email,
             password,
-            options: { data: { user_name: username, username } }
+            options: { data: { user_name: username, username }, emailRedirectTo: CINEFIA_SITE_URL }
         });
         if (error) throw error;
         cinefiaAuthBusy = false;
@@ -2150,7 +2310,7 @@ async function requestCinefiaPasswordReset() {
     if (submitButton) submitButton.disabled = true;
     try {
         // O redirecionamento usa a URL de Site URL configurada no painel Supabase.
-        const { error } = await cinefiaSupabaseClient.auth.resetPasswordForEmail(email);
+        const { error } = await cinefiaSupabaseClient.auth.resetPasswordForEmail(email, { redirectTo: CINEFIA_SITE_URL });
         if (error) throw error;
         cinefiaAuthMessage = 'Se o e-mail estiver cadastrado, você receberá instruções para redefinir a senha.';
         cinefiaAuthMessageKind = 'success';
