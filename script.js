@@ -2069,20 +2069,24 @@ function preferenceCheckboxes(list, name, selected) {
 
 async function openCinefiaExperienceModal() {
     document.getElementById('settingsModal')?.classList.remove('active');
-    if (cinefiaAuthUser && cinefiaPreferencesLoadedFor !== cinefiaAuthUser.id) await loadCinefiaPreferences(cinefiaAuthUser);
+    const modal = document.getElementById('experienceModal');
+    modal?.classList.add('active');
     renderCinefiaExperienceSettings();
-    document.getElementById('experienceModal')?.classList.add('active');
+    if (cinefiaAuthUser && cinefiaPreferencesLoadedFor !== cinefiaAuthUser.id) {
+        await loadCinefiaPreferences(cinefiaAuthUser);
+        if (modal?.classList.contains('active')) renderCinefiaExperienceSettings();
+    }
 }
 
 function renderCinefiaExperienceSettings() {
     const target = document.getElementById('cinefiaExperienceSettings');
     if (!target) return;
     if (!cinefiaAuthUser) {
-        target.innerHTML = `<section class="cinefia-experience-settings"><h3><i class="fa-solid fa-sparkles"></i> Experiência Cinéfia</h3><p>Entre em uma conta Cinéfia para salvar gêneros e serviços favoritos e receber recomendações personalizadas.</p><button class="feature-btn" type="button" onclick="openProfileModal()"><i class="fa-solid fa-right-to-bracket"></i> Entrar ou cadastrar</button></section>`;
+        target.innerHTML = `<section class="cinefia-experience-settings"><span class="experience-eyebrow">DO SEU JEITO</span><h3><i class="fa-solid fa-wand-magic-sparkles"></i> Experiência Cinéfia</h3><p>Seus gêneros, seus serviços, suas próximas descobertas.</p><div class="experience-account-prompt"><i class="fa-solid fa-user-lock"></i><h4>Uma experiência só sua</h4><p>Entre na sua conta para escolher seus gostos e levar suas preferências com você.</p><button class="save-btn" type="button" onclick="document.getElementById('experienceModal').classList.remove('active');openProfileModal()">Entrar ou cadastrar</button></div></section>`;
         return;
     }
     const prefs = cinefiaAccountPreferences || defaultCinefiaPreferences();
-    target.innerHTML = `<section class="cinefia-experience-settings"><h3><i class="fa-solid fa-sparkles"></i> Experiência Cinéfia</h3><p>Escolha seus gêneros e serviços. A aba Recomendados usará essas escolhas; a Home combinará suas preferências com conteúdos gerais.</p><div class="cinefia-preference-group"><label>Gêneros favoritos</label><div class="cinefia-preference-options">${preferenceCheckboxes(CINEFIA_PREFERENCE_GENRES, 'cinefiaGenre', prefs.genres)}</div></div><div class="cinefia-preference-group"><label>Serviços de streaming</label><div class="cinefia-preference-options">${preferenceCheckboxes(CINEFIA_PREFERENCE_PROVIDERS, 'cinefiaProvider', prefs.providers)}</div></div><div class="cinefia-auth-actions" style="margin-top:1rem"><button class="save-btn" type="button" onclick="saveCinefiaExperienceSettings()"><i class="fa-solid fa-check"></i> Salvar preferências</button><span id="cinefiaPreferencesFeedback" class="cinefia-auth-message" aria-live="polite"></span></div></section>`;
+    target.innerHTML = `<section class="cinefia-experience-settings"><span class="experience-eyebrow">DO SEU JEITO</span><h3><i class="fa-solid fa-wand-magic-sparkles"></i> Experiência Cinéfia</h3><p>Escolha o que você gosta. A próxima descoberta começa aqui.</p><div class="cinefia-preference-group"><h4 id="experienceGenresTitle"><i class="fa-solid fa-film"></i> Seus gêneros favoritos</h4><p>Selecione quantos quiser.</p><div class="cinefia-preference-options" role="group" aria-labelledby="experienceGenresTitle">${preferenceCheckboxes(CINEFIA_PREFERENCE_GENRES, 'cinefiaGenre', prefs.genres)}</div></div><div class="cinefia-preference-group"><h4 id="experienceProvidersTitle"><i class="fa-solid fa-play"></i> Onde você assiste</h4><p>Serviços com assinatura · disponibilidade consultada no Brasil.</p><div class="cinefia-preference-options" role="group" aria-labelledby="experienceProvidersTitle">${preferenceCheckboxes(CINEFIA_PREFERENCE_PROVIDERS, 'cinefiaProvider', prefs.providers)}</div></div><div class="experience-footer"><p>Recomendados segue suas escolhas. O Início mistura seus gostos com novas descobertas.</p><button class="save-btn" type="button" onclick="saveCinefiaExperienceSettings()"><i class="fa-solid fa-check"></i> Salvar preferências</button><span id="cinefiaPreferencesFeedback" class="cinefia-auth-message" aria-live="polite"></span></div></section>`;
 }
 
 async function saveCinefiaExperienceSettings() {
