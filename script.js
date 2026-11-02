@@ -1621,12 +1621,12 @@
             document.getElementById('profileModal')?.classList.remove('active');
             document.getElementById('onboardingModal')?.classList.remove('active');
             document.getElementById('cinefiaExperienceOnboarding')?.classList.remove('active');
+            document.getElementById('experienceModal')?.classList.remove('active');
         }
 
         function openSettingsModal() {
             document.getElementById('settingsModal').classList.add('active');
             document.getElementById('apiKeyInput').value = TMDB_API_KEY;
-            renderCinefiaExperienceSettings();
         }
 
         function saveSettings() {
@@ -2064,7 +2064,14 @@ async function saveCinefiaPreferences(preferences, feedbackNode) {
 }
 
 function preferenceCheckboxes(list, name, selected) {
-    return list.map(([id, label]) => `<label class="cinefia-preference-option"><input type="checkbox" name="${name}" value="${id}" ${selected.includes(id) ? 'checked' : ''}> ${escapeCinefiaHtml(label)}</label>`).join('');
+    return list.map(([id, label]) => `<button type="button" class="cinefia-preference-option" data-preference="${name}" data-value="${id}" aria-pressed="${selected.includes(id)}" onclick="this.setAttribute('aria-pressed', String(this.getAttribute('aria-pressed') !== 'true'))">${escapeCinefiaHtml(label)}</button>`).join('');
+}
+
+async function openCinefiaExperienceModal() {
+    document.getElementById('settingsModal')?.classList.remove('active');
+    if (cinefiaAuthUser && cinefiaPreferencesLoadedFor !== cinefiaAuthUser.id) await loadCinefiaPreferences(cinefiaAuthUser);
+    renderCinefiaExperienceSettings();
+    document.getElementById('experienceModal')?.classList.add('active');
 }
 
 function renderCinefiaExperienceSettings() {
@@ -2079,7 +2086,7 @@ function renderCinefiaExperienceSettings() {
 }
 
 async function saveCinefiaExperienceSettings() {
-    const preferences = { ...(cinefiaAccountPreferences || defaultCinefiaPreferences()), genres: [...document.querySelectorAll('input[name="cinefiaGenre"]:checked')].map(node => Number(node.value)), providers: [...document.querySelectorAll('input[name="cinefiaProvider"]:checked')].map(node => Number(node.value)) };
+    const preferences = { ...(cinefiaAccountPreferences || defaultCinefiaPreferences()), genres: [...document.querySelectorAll('[data-preference="cinefiaGenre"][aria-pressed="true"]')].map(node => Number(node.dataset.value)), providers: [...document.querySelectorAll('[data-preference="cinefiaProvider"][aria-pressed="true"]')].map(node => Number(node.dataset.value)) };
     const feedback = document.getElementById('cinefiaPreferencesFeedback');
     if (await saveCinefiaPreferences(preferences, feedback)) { currentPage = 1; if (currentMode === 'home' || currentMode === 'recommendations') fetchContent(); }
 }
@@ -2113,7 +2120,7 @@ async function playCinefiaExperienceIntro() {
     overlay.classList.add('active'); overlay.setAttribute('aria-hidden', 'false');
     await new Promise(resolve => setTimeout(resolve, 1700));
     overlay.classList.add('leaving');
-    await new Promise(resolve => setTimeout(resolve, 1150));
+    await new Promise(resolve => setTimeout(resolve, 550));
     overlay.classList.remove('active', 'leaving'); overlay.setAttribute('aria-hidden', 'true');
 }
 async function maybeStartCinefiaExperience(user) {
