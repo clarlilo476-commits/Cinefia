@@ -1286,6 +1286,7 @@
                 </details>
             `;
 
+            closeDetailSidePanel();
             content.innerHTML = `
                 <button class="modal-close" onclick="forceCloseModal()"><i class="fa-solid fa-xmark"></i></button>
                 <img src="${poster}" alt="${title}" class="modal-img">
@@ -1325,33 +1326,18 @@
 
             requestAnimationFrame(refreshSynopsisControl);
 
-            // Info, episódios e elenco são painéis exclusivos: apenas um pode ficar aberto.
+            // Os painéis abrem à direita; o modal principal continua rolável.
             const expandableItems = Array.from(content.querySelectorAll('.expandable-details'));
             expandableItems.forEach(details => {
                 details.addEventListener('toggle', () => {
-                    const body = details.querySelector('.expandable-body');
                     if (!details.open) {
-                        body?.classList.remove('is-overflowing');
+                        if (activeDetailSide?.details === details) closeDetailSidePanel();
                         return;
                     }
-
                     expandableItems.forEach(other => {
-                        if (other !== details && other.open) {
-                            other.open = false;
-                            other.querySelector('.expandable-body')?.classList.remove('is-overflowing');
-                        }
+                        if (other !== details && other.open) other.open = false;
                     });
-
-                    if (body) {
-                        body.classList.remove('is-overflowing');
-                        requestAnimationFrame(() => {
-                            if (!details.open || !body.isConnected || getComputedStyle(body).position !== 'absolute') return;
-                            const bounds = body.getBoundingClientRect();
-                            if (bounds.right > window.innerWidth - 12 || bounds.left < 12) {
-                                body.classList.add('is-overflowing');
-                            }
-                        });
-                    }
+                    openDetailSidePanel(details);
                 });
             });
         }
@@ -1606,16 +1592,49 @@
             }
         }
 
+        let activeDetailSide = null;
+        function openDetailSidePanel(details) {
+            const body = details.querySelector('.expandable-body');
+            const overlay = document.getElementById('detailSideOverlay');
+            const host = document.getElementById('detailSideContent');
+            if (!body || !overlay || !host) return;
+            closeDetailSidePanel();
+            const marker = document.createComment('local do painel de detalhes');
+            body.before(marker);
+            host.append(body);
+            activeDetailSide = { details, body, marker };
+            document.getElementById('detailSideTitle').textContent = details.querySelector('summary')?.textContent?.trim() || 'Informações';
+            overlay.classList.add('active');
+            overlay.setAttribute('aria-hidden', 'false');
+            document.getElementById('detailsModal')?.classList.add('side-panel-open');
+            document.addEventListener('keydown', detailSideEscape);
+        }
+        function closeDetailSidePanel() {
+            const overlay = document.getElementById('detailSideOverlay');
+            overlay?.classList.remove('active');
+            overlay?.setAttribute('aria-hidden', 'true');
+            document.getElementById('detailsModal')?.classList.remove('side-panel-open');
+            document.removeEventListener('keydown', detailSideEscape);
+            if (!activeDetailSide) return;
+            const { details, body, marker } = activeDetailSide;
+            activeDetailSide = null;
+            if (marker.isConnected) marker.replaceWith(body);
+            if (details.isConnected && details.open) details.open = false;
+        }
+        function detailSideEscape(event) { if (event.key === 'Escape') closeDetailSidePanel(); }
+
         function closeModal(e) {
             if (e.target.classList.contains('modal-overlay')) {
                 e.target.classList.remove('active');
                 if (e.target.id === 'detailsModal') {
+                    closeDetailSidePanel();
                     document.getElementById('modalContent').innerHTML = '';
                 }
             }
         }
 
         function forceCloseModal() {
+            closeDetailSidePanel();
             document.getElementById('detailsModal')?.classList.remove('active');
             document.getElementById('settingsModal')?.classList.remove('active');
             document.getElementById('profileModal')?.classList.remove('active');
