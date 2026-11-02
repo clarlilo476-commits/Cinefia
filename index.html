@@ -74,6 +74,30 @@
             background: #171522;
             font-size: 1.2rem;
         }
+        .cinefia-experience-intro {
+            position: fixed; inset: 0; z-index: 5000; display: flex; align-items: center; justify-content: center;
+            flex-direction: column; gap: 18px; background: #000; color: #fff; opacity: 0; visibility: hidden;
+            pointer-events: none; transition: opacity .35s ease, visibility .35s ease;
+        }
+        .cinefia-experience-intro.active { opacity: 1; visibility: visible; pointer-events: auto; }
+        .cinefia-experience-intro.leaving { animation: cinefiaIntroLeave 1.15s cubic-bezier(.22,.8,.25,1) forwards; }
+        .cinefia-experience-logo { color: var(--accent); font-size: 4.5rem; filter: drop-shadow(0 0 22px rgba(244,117,33,.5)); animation: cinefiaIntroLogo 1.2s ease-in-out infinite alternate; }
+        .cinefia-experience-intro h2 { font: 800 1.35rem var(--font-title); margin: 0; }
+        .cinefia-experience-intro p { color: var(--text-muted); margin: 0; }
+        @keyframes cinefiaIntroLogo { from { transform: scale(.92) rotate(-7deg); } to { transform: scale(1.08) rotate(7deg); } }
+        @keyframes cinefiaIntroLeave { 0% { opacity: 1; transform: translateY(0) scale(1); } 70% { opacity: 1; transform: translateY(-42vh) scale(.22); } 100% { opacity: 0; visibility: hidden; transform: translateY(-48vh) scale(.15); } }
+        .cinefia-experience-settings { margin-top: 1.25rem; padding: 1rem; border: 1px solid rgba(244,117,33,.32); border-radius: 12px; background: linear-gradient(145deg, rgba(244,117,33,.12), rgba(20,21,25,.95)); }
+        .cinefia-experience-settings h3 { color: var(--accent); font: 800 1rem var(--font-title); margin-bottom: .35rem; }
+        .cinefia-experience-settings p { color: var(--text-muted); font-size: .8rem; line-height: 1.45; margin-bottom: .8rem; }
+        .cinefia-preference-group { margin-top: .8rem; }
+        .cinefia-preference-group > label { display: block; color: var(--text-muted); font-size: .74rem; font-weight: 800; text-transform: uppercase; letter-spacing: .7px; margin-bottom: .5rem; }
+        .cinefia-preference-options { display: flex; flex-wrap: wrap; gap: .45rem; }
+        .cinefia-preference-option { display: inline-flex; align-items: center; gap: .35rem; padding: .42rem .55rem; border-radius: 7px; background: var(--bg-dark); border: 1px solid rgba(255,255,255,.1); color: #fff; font-size: .75rem; cursor: pointer; }
+        .cinefia-preference-option:has(input:checked) { border-color: var(--accent); color: var(--accent); background: rgba(244,117,33,.1); }
+        .cinefia-preference-option input { accent-color: var(--accent); }
+        .cinefia-onboarding-options { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
+        .cinefia-onboarding-options select { width: 100%; padding: .75rem; background: var(--bg-dark); color: #fff; border: 1px solid rgba(255,255,255,.12); border-radius: 7px; }
+        @media (max-width: 650px) { .cinefia-onboarding-options { grid-template-columns: 1fr; } .cinefia-experience-logo { font-size: 3.7rem; } }
         @media (max-width: 700px) {
             .mobile-nav-toggle { display: block; }
             .sidebar {
@@ -108,6 +132,12 @@
     </style>
 </head>
 <body>
+
+    <div id="cinefiaExperienceIntro" class="cinefia-experience-intro" aria-hidden="true">
+        <i class="fa-solid fa-film cinefia-experience-logo"></i>
+        <h2>Preparando sua experiência Cinéfia</h2>
+        <p>Organizando seus filmes e séries favoritos...</p>
+    </div>
 
     <button class="mobile-nav-toggle" type="button" aria-label="Abrir menu" aria-expanded="false" onclick="toggleMobileNavigation()"><i class="fa-solid fa-ellipsis-vertical"></i></button>
 
@@ -281,7 +311,7 @@
     </div>
 
     <div class="modal-overlay" id="settingsModal" onclick="closeModal(event)">
-        <div class="modal-content" style="max-width: 450px; flex-direction: column; padding: 2rem;">
+        <div class="modal-content" style="max-width: 650px; flex-direction: column; padding: 2rem;">
             <button class="modal-close" onclick="forceCloseModal()"><i class="fa-solid fa-xmark"></i></button>
             <h2 style="font-family: var(--font-title); margin-bottom: 1rem;">Configurações</h2>
             <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1.5rem;">Suas chaves de API já estão configuradas.</p>
@@ -294,6 +324,14 @@
                 <button class="save-btn" onclick="saveSettings()">Salvar API Key</button>
                 <p id="settingsMsg" style="color: #4ade80; font-size: 0.85rem; display: none; margin-top: 5px;">Salvo com sucesso!</p>
             </div>
+            <div id="cinefiaExperienceSettings"></div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="cinefiaExperienceOnboarding" onclick="closeModal(event)">
+        <div class="modal-content" style="max-width: 560px; flex-direction: column; padding: 2rem;">
+            <button class="modal-close" onclick="closeCinefiaExperienceOnboarding()" aria-label="Fechar"><i class="fa-solid fa-xmark"></i></button>
+            <div id="cinefiaExperienceOnboardingBody"></div>
         </div>
     </div>
 
