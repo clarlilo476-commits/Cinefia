@@ -428,11 +428,20 @@
 #detailsModal .modal-close { z-index: 30; }
 #detailsModal .expandable-body,
 #detailsModal .expandable-body.is-overflowing {
-    position: static; inset: auto; width: 100%; max-width: 100%; max-height: none;
-    overflow: visible; margin: 0 0 12px; padding: 16px;
-    opacity: 1; visibility: visible; transform: none; box-shadow: none;
-    border-radius: 10px; background: var(--bg-dark);
+    position: fixed; top: 50%; left: 50%; right: auto; bottom: auto;
+    width: min(700px, calc(100vw - 32px)); max-width: calc(100vw - 32px);
+    max-height: min(78vh, 720px); overflow-y: auto; overflow-x: hidden;
+    margin: 0; padding: 34px 20px 20px;
+    opacity: 0; visibility: hidden; transform: translate(-50%, -46%);
+    box-shadow: 0 28px 90px rgba(0,0,0,.82), 0 0 0 100vmax rgba(0,0,0,.68);
+    border-radius: 14px; background: var(--bg-panel); z-index: 3100;
 }
+#detailsModal .expandable-details[open] .expandable-body {
+    opacity: 1; visibility: visible; transform: translate(-50%, -50%);
+}
+#detailsModal .expandable-body .cinefia-comments-container,
+#detailsModal .expandable-body .crew-grid,
+#detailsModal .expandable-body .episode-grid { min-width: 0; }
 #detailsModal .modal-desc.synopsis-collapsed {
     display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 5;
     line-clamp: 5; overflow: hidden;
@@ -474,6 +483,8 @@
     #detailsModal #modalContent { display: flex; flex-direction: column; overflow-y: auto; }
     #detailsModal .modal-info { height: auto; flex: 0 0 auto; overflow: visible; padding: 24px 20px; }
     #detailsModal .modal-img { flex: 0 0 auto; height: 220px; max-height: none; aspect-ratio: auto; object-position: center 20%; }
+    #detailsModal .expandable-body,
+    #detailsModal .expandable-body.is-overflowing { width: calc(100vw - 24px); max-width: calc(100vw - 24px); max-height: 78dvh; }
 }
 @media (max-width: 600px) {
     #detailsModal, #experienceModal { padding: 8px; }
