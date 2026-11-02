@@ -2039,7 +2039,7 @@ async function submitCinefiaComment(event, tmdbId, mediaType) {
     await loadCinefiaComments(Number(tmdbId), mediaType);
 }
 
-const CINEFIA_SITE_URL = 'https://clarlilo476-commits.github.io/Cinefia/';
+const CINEFIA_SITE_URL = 'https://cinefia.com.br/';
 const CINEFIA_GUEST_EXPERIENCE_KEY = 'cinefia_guest_experience_v1';
 const CINEFIA_INTRO_SESSION_KEY = 'cinefia_intro_seen_v1';
 let cinefiaAccountPreferences = null;
