@@ -428,20 +428,41 @@
 #detailsModal .modal-close { z-index: 30; }
 #detailsModal .expandable-body,
 #detailsModal .expandable-body.is-overflowing {
-    position: fixed; top: 50%; left: 50%; right: auto; bottom: auto;
-    width: min(700px, calc(100vw - 32px)); max-width: calc(100vw - 32px);
-    max-height: min(78vh, 720px); overflow-y: auto; overflow-x: hidden;
-    margin: 0; padding: 34px 20px 20px;
-    opacity: 0; visibility: hidden; transform: translate(-50%, -46%);
-    box-shadow: 0 28px 90px rgba(0,0,0,.82), 0 0 0 100vmax rgba(0,0,0,.68);
-    border-radius: 14px; background: var(--bg-panel); z-index: 3100;
+    position: static; inset: auto; width: 100%; max-width: 100%;
+    max-height: none; opacity: 1; visibility: visible; transform: none;
 }
-#detailsModal .expandable-details[open] .expandable-body {
-    opacity: 1; visibility: visible; transform: translate(-50%, -50%);
-}
+#detailsModal .expandable-details[open] .expandable-body { transform: none; }
 #detailsModal .expandable-body .cinefia-comments-container,
 #detailsModal .expandable-body .crew-grid,
 #detailsModal .expandable-body .episode-grid { min-width: 0; }
+.detail-side-overlay {
+    position: fixed; inset: 0; z-index: 1900; display: none;
+    background: rgba(0,0,0,.35); backdrop-filter: blur(3px);
+}
+.detail-side-overlay.active { display: block; }
+#trailerOverlay { z-index: 2200; }
+.detail-side-panel {
+    position: absolute; right: 16px; top: 50%; transform: translateY(-50%);
+    width: min(470px, calc(100vw - 32px)); max-height: min(85dvh, 800px);
+    display: flex; flex-direction: column; overflow: hidden;
+    background: var(--bg-panel); color: var(--text-main);
+    border: 1px solid rgba(244,117,33,.34); border-radius: 14px;
+    box-shadow: 0 26px 80px rgba(0,0,0,.8);
+}
+.detail-side-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid rgba(255,255,255,.1); }
+.detail-side-heading h3 { color: var(--accent); font: 800 1.1rem var(--font-title); }
+.detail-side-heading button { flex: 0 0 auto; width: 36px; height: 36px; border: 0; border-radius: 50%; background: #050505; color: #fff; cursor: pointer; }
+.detail-side-heading button:hover { background: var(--accent); }
+.detail-side-content { overflow-y: auto; overscroll-behavior: contain; min-height: 0; padding: 20px; }
+.detail-side-content > .expandable-body,
+.detail-side-content > .expandable-body.is-overflowing {
+    position: static; inset: auto; width: 100%; max-width: 100%; max-height: none;
+    padding: 0; margin: 0; opacity: 1; visibility: visible; transform: none;
+    box-shadow: none; border: 0; background: transparent; overflow: visible;
+}
+@media (min-width: 1200px) {
+    #detailsModal.side-panel-open #modalContent { transform: translateX(-min(14vw, 180px)) !important; }
+}
 #detailsModal .modal-desc.synopsis-collapsed {
     display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 5;
     line-clamp: 5; overflow: hidden;
@@ -483,8 +504,7 @@
     #detailsModal #modalContent { display: flex; flex-direction: column; overflow-y: auto; }
     #detailsModal .modal-info { height: auto; flex: 0 0 auto; overflow: visible; padding: 24px 20px; }
     #detailsModal .modal-img { flex: 0 0 auto; height: 220px; max-height: none; aspect-ratio: auto; object-position: center 20%; }
-    #detailsModal .expandable-body,
-    #detailsModal .expandable-body.is-overflowing { width: calc(100vw - 24px); max-width: calc(100vw - 24px); max-height: 78dvh; }
+    .detail-side-panel { right: 12px; width: min(470px, calc(100vw - 24px)); }
 }
 @media (max-width: 600px) {
     #detailsModal, #experienceModal { padding: 8px; }
@@ -492,5 +512,7 @@
     #experienceModal .modal-content { max-height: calc(100dvh - 16px); }
     #experienceModal .cinefia-experience-settings { padding: 26px 18px; }
     #experienceModal .cinefia-preference-option { padding: 10px 13px; }
+    .detail-side-panel { right: 8px; max-height: calc(100dvh - 16px); width: calc(100vw - 16px); }
+    .detail-side-content { padding: 16px; }
 }
 @media (max-width: 650px) { .cinefia-community-score { align-items: flex-start; flex-direction: column; } .cinefia-community-score-meta { text-align: left; } .cinefia-comment-form-row { align-items: flex-start; flex-direction: column; } .cinefia-comment-form-row input { max-width: 100%; } .cinefia-comment-card-top { align-items: flex-start; flex-direction: column; gap: .3rem; } }
