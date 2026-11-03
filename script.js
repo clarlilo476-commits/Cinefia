@@ -1752,8 +1752,8 @@ function renderSupabaseAuthPanel() {
                 <p>No Cinéfia, você cria uma conta com e-mail, nome de usuário e senha.</p>
                 <ol>
                     <li>Preencha seus dados e envie o cadastro.</li>
-                    <li>Se a confirmação estiver ativa, confira seu e-mail e a pasta de spam.</li>
-                    <li>Depois, entre no Cinéfia usando o e-mail e a senha cadastrados.</li>
+                    <li>Ao concluir o cadastro, você já entra na sua conta.</li>
+                    <li>Nos próximos acessos, use o e-mail e a senha cadastrados.</li>
                 </ol>
                 <p>O nome de usuário deve ter de 3 a 20 caracteres: letras minúsculas, números ou _.</p>
             </div>
@@ -1766,7 +1766,7 @@ function renderSupabaseAuthPanel() {
     }
     panel.innerHTML = `
         <h3 class="cinefia-auth-title"><i class="fa-solid fa-shield-halved" style="color:var(--accent)"></i> ${isSignup ? 'Criar conta Cinéfia' : 'Entrar na sua conta'}</h3>
-        <p class="cinefia-auth-muted">${isSignup ? 'Crie uma conta com e-mail e senha. A confirmação por e-mail pode ser solicitada pelo Supabase.' : 'Entre com seu e-mail e senha para autenticar sua conta na nuvem.'}</p>
+        <p class="cinefia-auth-muted">${isSignup ? 'Preencha seus dados para criar sua conta e começar a usar o Cinéfia.' : 'Entre com seu e-mail e senha.'}</p>
         <form class="cinefia-auth-form" onsubmit="${isSignup ? 'handleCinefiaSignup(event)' : 'handleCinefiaLogin(event)'}">
             ${isSignup ? `
                 <button type="button" class="cinefia-auth-switch cinefia-auth-how-link" onclick="showCinefiaSignupInstructions()"><i class="fa-regular fa-circle-question"></i> Como funciona?</button>
@@ -1832,7 +1832,7 @@ function normalizeCinefiaAuthError(error, action) {
     const raw = String(error?.message || '').toLowerCase();
     if (raw.includes('profiles_username_key') || raw.includes('duplicate key') || (raw.includes('username') && (raw.includes('duplicate') || raw.includes('unique')))) return 'Esse nome de usuário já está em uso. Escolha outro.';
     if (raw.includes('invalid login credentials')) return 'E-mail ou senha incorretos. Confira os dados e tente novamente.';
-    if (raw.includes('email not confirmed')) return 'Confirme seu e-mail pelo link enviado antes de entrar.';
+    if (raw.includes('email not confirmed')) return 'O acesso desta conta ainda está pendente. Entre em contato com o suporte do Cinéfia.';
     if (raw.includes('user already registered')) return 'Não foi possível concluir o cadastro com esses dados. Tente entrar ou use outro e-mail.';
     if (raw.includes('rate limit') || raw.includes('too many requests')) return 'Muitas tentativas em pouco tempo. Aguarde um pouco e tente novamente.';
     if (raw.includes('password should be') || raw.includes('password')) return 'A senha não atende aos requisitos configurados. Use uma senha longa e tente novamente.';
@@ -2222,12 +2222,6 @@ async function initSupabaseAuth() {
         const { data, error } = await cinefiaSupabaseClient.auth.getSession();
         if (error) throw error;
         cinefiaAuthUser = data.session?.user || null;
-        const authRedirectType = new URLSearchParams(window.location.hash.replace(/^#/, '')).get('type');
-        if (authRedirectType === 'signup' || authRedirectType === 'email') {
-            cinefiaAuthMessage = 'E-mail confirmado com sucesso. Sua conta Cinéfia está pronta.';
-            cinefiaAuthMessageKind = 'success';
-            try { window.history.replaceState({}, document.title, window.location.pathname + window.location.search); } catch (_) {}
-        }
         renderSupabaseAuthPanel();
         if (cinefiaAuthUser) {
             await ensureCinefiaPrivateProfile(cinefiaAuthUser);
@@ -2334,7 +2328,7 @@ async function handleCinefiaSignup(event) {
         const { data, error } = await cinefiaSupabaseClient.auth.signUp({
             email,
             password,
-            options: { data: { user_name: username, username }, emailRedirectTo: CINEFIA_SITE_URL }
+            options: { data: { user_name: username, username } }
         });
         if (error) throw error;
         cinefiaAuthBusy = false;
@@ -2351,8 +2345,8 @@ async function handleCinefiaSignup(event) {
             renderSupabaseAuthPanel();
         } else {
             cinefiaAuthMode = 'login';
-            cinefiaAuthMessage = 'Cadastro recebido. Se a confirmação de e-mail estiver ativa, enviamos um link para você. Confira também a pasta de spam. Depois de confirmar, volte aqui e entre com seu e-mail e senha.';
-            cinefiaAuthMessageKind = 'success';
+            cinefiaAuthMessage = 'Não foi possível iniciar sua sessão após o cadastro. Tente entrar com seu e-mail e senha. Se o acesso continuar indisponível, entre em contato com o suporte do Cinéfia.';
+            cinefiaAuthMessageKind = 'error';
             renderSupabaseAuthPanel();
         }
     } catch (error) {
