@@ -341,6 +341,11 @@
 .cinefia-auth-panel { background: linear-gradient(145deg, rgba(244,117,33,.09), rgba(20,21,25,.98) 45%); border: 1px solid rgba(244,117,33,.28); border-radius: 12px; padding: 1.1rem; margin: .15rem 0 1rem; }
 .cinefia-auth-title { font-family: var(--font-title); color: var(--text-main); font-size: 1.05rem; font-weight: 800; margin-bottom: .35rem; }
 .cinefia-auth-muted { color: var(--text-muted); font-size: .84rem; line-height: 1.5; }
+.cinefia-auth-instructions { margin: .8rem 0 1rem; padding: .9rem 1rem; border: 1px solid rgba(244,117,33,.24); border-radius: 9px; background: rgba(0,0,0,.28); color: #d1d5db; font-size: .86rem; line-height: 1.55; }
+.cinefia-auth-instructions p + p { margin-top: .65rem; }
+.cinefia-auth-instructions ol { margin: .55rem 0 .55rem 1.25rem; padding: 0; }
+.cinefia-auth-instructions li { padding-left: .2rem; margin: .3rem 0; }
+.cinefia-auth-how-link { align-self: flex-start; margin: -.35rem 0 0; }
 .cinefia-auth-form { display: flex; flex-direction: column; gap: .8rem; margin-top: .9rem; }
 .cinefia-auth-field { display: flex; flex-direction: column; gap: .35rem; }
 .cinefia-auth-field label { color: var(--text-muted); font-size: .82rem; font-weight: 800; }
