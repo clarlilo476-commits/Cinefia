@@ -1053,7 +1053,7 @@
                     </div>
                     <div class="card-info">
                         <h3 class="card-title">${title}</h3>
-                        <div class="card-meta">${year} • ${mediaType === 'tv' ? 'Série' : 'Filme'} • <span class="cinefia-score">CFS ${calculateCinefiaScore(item)}</span></div>
+                        <div class="card-meta">${year} • ${mediaType === 'tv' ? 'Série' : 'Filme'} • <span class="cinefia-score"> CFS ${calculateCinefiaScore(item)}</span></div>
                     </div>
                 `;
                 grid.appendChild(card);
