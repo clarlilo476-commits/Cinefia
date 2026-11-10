@@ -10,6 +10,11 @@
         let currentCategory = 'all';
         let currentPage = 1;
         let totalPages = 1;
+        const TITLES_PER_PAGE = 32;
+        const TMDB_PAGE_SIZE = 20;
+        const TMDB_PAGE_LIMIT = 500;
+        const catalogCache = new Map();
+        let catalogRequest = 0;
         let currentGenreSearch = null; // Guarda a configuração da pesquisa inteligente por gênero (ex.: "anime", "dorama", "terror", "ação").
 
         let searchTimeout;
@@ -117,11 +122,13 @@
 
         document.addEventListener('DOMContentLoaded', () => {
             initSupabaseAuth();
+            initCinefiaPrivacy();
             window.addEventListener('resize', refreshSynopsisControl);
+            window.matchMedia('(max-width: 900px)').addEventListener('change', () => setMobileNavigation(false));
             document.querySelectorAll('.nav-menu .nav-link').forEach(link => {
                 link.addEventListener('click', () => {
-                    if (window.matchMedia('(max-width: 700px)').matches && document.body.classList.contains('mobile-nav-open')) {
-                        toggleMobileNavigation();
+                    if (document.body.classList.contains('mobile-nav-open')) {
+                        setMobileNavigation(false);
                     }
                 });
             });
@@ -178,7 +185,7 @@
                 datasets.flatMap(data => data.results || []).forEach(item => {
                     const type = item.media_type || (item.first_air_date ? 'tv' : 'movie');
                     const key = `${type}-${item.id}`;
-                    if (item.backdrop_path && item.poster_path && !seen.has(key)) {
+                    if (Number.isSafeInteger(item.id) && !item.adult && validTmdbImage(item.backdrop_path) && validTmdbImage(item.poster_path) && !seen.has(key)) {
                         seen.add(key);
                         merged.push({ ...item, media_type: type });
                     }
@@ -191,9 +198,9 @@
 
                 let slidesHTML = '';
                 heroSlides.forEach((item, index) => {
-                    const title = item.title || item.name;
-                    const overview = item.overview || 'Explore os detalhes desta obra incrível no catálogo.';
-                    const backdrop = `https://image.tmdb.org/t/p/original${item.backdrop_path}`;
+                    const title = escapeCinefiaHtml(item.title || item.name);
+                    const overview = escapeCinefiaHtml(item.overview || 'Explore os detalhes desta obra incrível no catálogo.');
+                    const backdrop = `https://image.tmdb.org/t/p/w1280${item.backdrop_path}`;
                     const poster = `${IMG_BASE_URL}${item.poster_path}`;
                     const type = item.media_type === 'tv' ? 'tv' : 'movie';
                     const rating = item.vote_average ? item.vote_average.toFixed(1) : 'N/A';
@@ -202,7 +209,7 @@
                         <div class="hero-slide ${index === 0 ? 'active' : ''}">
                             <div class="hero-bg" style="background-image: url('${backdrop}')"></div>
                             <div class="hero-content-wrapper">
-                                <img src="${poster}" class="hero-poster" alt="${title}" onclick="openDetails(${item.id}, '${type}')" />
+                                <img src="${poster}" class="hero-poster" alt="${title}" data-title-id="${item.id}" data-title-type="${type}" onclick="openDetails(Number(this.dataset.titleId), this.dataset.titleType)" />
                                 <div class="hero-text">
                                     <h1>${title}</h1>
                                     <div class="modal-tags" style="margin-bottom: 0.8rem;">
@@ -253,12 +260,99 @@
 
         // --- FAIXAS DA HOME: lançamentos do ano, melhores avaliados e filmes (com aleatorização) ---
         function cinefiaShuffle(arr) {
-            return arr.sort(() => Math.random() - 0.5);
+            for (let i = arr.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [arr[i], arr[j]] = [arr[j], arr[i]];
+            }
+            return arr;
         }
 
-        async function fetchHomeBestReleases() {
+        async function fetchCinefiaJson(url, options) {
+            const response = await fetch(url, options);
+            if (!response.ok) throw new Error('Serviço indisponível');
+            return response.json();
+        }
+
+        function uniqueTitles(items, seen = new Set()) {
+            return items.filter(item => {
+                const key = `${item.media_type}-${item.id}`;
+                if (!Number.isSafeInteger(item.id) || item.id <= 0 || !['movie', 'tv'].includes(item.media_type) ||
+                    !validTmdbImage(item.poster_path) || item.adult || seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+        }
+
+        function validTmdbImage(path) {
+            return typeof path === 'string' && /^\/[\w.-]+\.(?:jpe?g|png|webp)$/i.test(path);
+        }
+
+        function tagTitles(items, type) {
+            return items.map(item => ({ ...item, media_type: type || item.media_type || (item.title ? 'movie' : 'tv') }));
+        }
+
+        // O TMDB entrega lotes de 20. Os excedentes ficam disponíveis para a próxima página do Cinéfia.
+        async function catalogPage(sources, page, compare) {
+            if (!sources.length) return {items: [], pages: 1};
+            const key = JSON.stringify(sources);
+            let entry = catalogCache.get(key);
+            if (!entry || entry.expires < Date.now()) {
+                entry = {items: [], seen: new Set(), next: 1, limits: sources.map(() => 1), counts: [], expires: Date.now() + 300000};
+            }
+            catalogCache.delete(key);
+            catalogCache.set(key, entry);
+            if (catalogCache.size > 8) catalogCache.delete(catalogCache.keys().next().value);
+            const end = page * TITLES_PER_PAGE;
+            while (entry.items.length < end && entry.next <= Math.max(...entry.limits)) {
+                if (!entry.pending) {
+                    const batchPage = entry.next;
+                    entry.pending = Promise.all(sources.map(({url, type}, index) => {
+                        if (batchPage > entry.limits[index]) return [];
+                        const requestUrl = new URL(url);
+                        requestUrl.searchParams.set('page', batchPage);
+                        return fetchCinefiaJson(requestUrl).then(data => {
+                            const results = Array.isArray(data.results) ? data.results : [];
+                            entry.limits[index] = Math.min(TMDB_PAGE_LIMIT, Number(data.total_pages) || 0);
+                            entry.counts[index] = Math.min(Number(data.total_results) || entry.limits[index] * TMDB_PAGE_SIZE, entry.limits[index] * TMDB_PAGE_SIZE);
+                            return tagTitles(results, type);
+                        });
+                    })).then(batches => {
+                        const titles = batches.flat();
+                        if (compare) titles.sort(compare);
+                        entry.items.push(...uniqueTitles(titles, entry.seen));
+                        entry.next++;
+                    }).finally(() => { entry.pending = null; });
+                }
+                await entry.pending;
+            }
+            const more = entry.next <= Math.max(...entry.limits);
+            const known = Math.ceil(entry.items.length / TITLES_PER_PAGE);
+            const estimate = Math.ceil(entry.counts.reduce((sum, count) => sum + count, 0) / TITLES_PER_PAGE);
+            return {items: entry.items.slice(end - TITLES_PER_PAGE, end), pages: Math.max(1, more ? Math.max(known, page + 1, estimate) : known)};
+        }
+
+        function showCatalogPage(result, request, emptyMessage = 'Nenhum resultado encontrado.') {
+            if (request !== catalogRequest) return;
+            if (currentPage > result.pages && currentPage > 1) {
+                currentPage = result.pages;
+                void fetchContent();
+                return;
+            }
+            totalPages = result.pages;
+            renderGrid(result.items);
+            if (!result.items.length) showCatalogNotice(emptyMessage);
+            updatePagination();
+        }
+
+        function showCatalogNotice(message = '') {
+            const notice = document.getElementById('catalogNotice');
+            notice.textContent = message;
+            notice.hidden = !message;
+        }
+
+        async function fetchHomeBestReleases(request) {
             const currentYear = new Date().getFullYear();
-            const samplePages = cinefiaShuffle([1,2,3,4,5,6,7,8]).slice(0, 3);
+            const samplePages = [1, 2, ...cinefiaShuffle([3,4,5,6,7,8]).slice(0, 2)];
             const history = JSON.parse(sessionStorage.getItem('cinefia_home_page_history') || '[]');
             const recentIds = new Set(history.slice(-5).flat().map(String));
             const requests = [];
@@ -273,15 +367,15 @@
                 const key = `${type}-${item.id}`;
                 if (item.poster_path && !seen.has(key) && !recentIds.has(key)) { seen.add(key); candidates.push({ ...item, media_type: type }); }
             }));
-            const pageItems = cinefiaShuffle(candidates).slice(0, 20);
-            renderGrid(pageItems.length ? pageItems : candidates.slice(0, 20));
+            const pageItems = fillHomePage(candidates, datasets, request);
+            if (!pageItems) return;
             history.push(pageItems.map(item => `${item.media_type}-${item.id}`));
             sessionStorage.setItem('cinefia_home_page_history', JSON.stringify(history.slice(-5)));
             totalPages = 500;
             updatePagination();
         }
 
-        async function fetchHomeTopRated() {
+        async function fetchHomeTopRated(request) {
             const samplePages = cinefiaShuffle([1,2,3,4,5,6,7,8,9,10]).slice(0, 3);
             const history = JSON.parse(sessionStorage.getItem('cinefia_home_page_history') || '[]');
             const recentIds = new Set(history.slice(-5).flat().map(String));
@@ -297,15 +391,15 @@
                 const key = `${type}-${item.id}`;
                 if (item.poster_path && !seen.has(key) && !recentIds.has(key)) { seen.add(key); candidates.push({ ...item, media_type: type }); }
             }));
-            const pageItems = cinefiaShuffle(candidates).slice(0, 20);
-            renderGrid(pageItems.length ? pageItems : candidates.slice(0, 20));
+            const pageItems = fillHomePage(candidates, datasets, request);
+            if (!pageItems) return;
             history.push(pageItems.map(item => `${item.media_type}-${item.id}`));
             sessionStorage.setItem('cinefia_home_page_history', JSON.stringify(history.slice(-5)));
             totalPages = 500;
             updatePagination();
         }
 
-        async function fetchHomeMoviesOnly() {
+        async function fetchHomeMoviesOnly(request) {
             const sorts = ['popularity.desc', 'vote_average.desc', 'revenue.desc'];
             const samplePages = cinefiaShuffle(Array.from({ length: 20 }, (_, i) => i + 1)).slice(0, 4);
             const history = JSON.parse(sessionStorage.getItem('cinefia_home_page_history') || '[]');
@@ -321,18 +415,33 @@
                 const key = `movie-${item.id}`;
                 if (item.poster_path && !seen.has(key) && !recentIds.has(key)) { seen.add(key); candidates.push({ ...item, media_type: 'movie' }); }
             }));
-            const pageItems = cinefiaShuffle(candidates).slice(0, 20);
-            renderGrid(pageItems.length ? pageItems : candidates.slice(0, 20));
+            const pageItems = fillHomePage(candidates, datasets, request);
+            if (!pageItems) return;
             history.push(pageItems.map(item => `${item.media_type}-${item.id}`));
             sessionStorage.setItem('cinefia_home_page_history', JSON.stringify(history.slice(-5)));
             totalPages = 500;
             updatePagination();
         }
 
+        function fillHomePage(candidates, datasets, request) {
+            if (request !== catalogRequest) return null;
+            const available = datasets.flatMap(({d, type}) => tagTitles(d.results || [], type));
+            const pageItems = uniqueTitles([...cinefiaShuffle(candidates), ...cinefiaShuffle(available)]).slice(0, TITLES_PER_PAGE);
+            renderGrid(pageItems);
+            if (!pageItems.length) showCatalogNotice('Nenhum título encontrado nesta página.');
+            return pageItems;
+        }
+
         async function fetchContent() {
             const grid = document.getElementById('resultsGrid');
             const pagination = document.getElementById('paginationContainer');
             if (!TMDB_API_KEY) return;
+            const request = ++catalogRequest;
+            const page = currentPage;
+            const renew = document.getElementById('renewRecommendations');
+            renew.hidden = currentMode !== 'recommendations' || !cinefiaAuthUser;
+            renew.disabled = true;
+            showCatalogNotice();
 
             grid.innerHTML = '<div class="message-box"><div class="spinner"></div><p style="margin-top:15px;">A carregar dados...</p></div>';
             pagination.style.display = 'none';
@@ -342,25 +451,29 @@
             if (currentMode === 'home') {
                 if (currentPage === 1 && cinefiaAuthUser && cinefiaAccountPreferences && (cinefiaAccountPreferences.genres.length || cinefiaAccountPreferences.providers.length)) {
                     document.getElementById('sectionTitle').innerText = 'Em destaque para você';
-                    await fetchPersonalizedHomeMix();
-                    return;
+                    try {
+                        await fetchPersonalizedHomeMix(request);
+                        return;
+                    } catch {
+                        if (request !== catalogRequest) return;
+                    }
                 }
                 // Faixas de página da Home: 1–5 melhores lançamentos do ano, 5–10 melhores avaliados, 10–15 somente filmes.
                 try {
                     if (currentPage <= 5) {
                         document.getElementById('sectionTitle').innerText = `Melhores Lançamentos de ${new Date().getFullYear()}`;
-                        await fetchHomeBestReleases();
+                        await fetchHomeBestReleases(request);
                         return;
                     } else if (currentPage <= 10) {
                         document.getElementById('sectionTitle').innerText = 'Melhores Avaliados';
-                        await fetchHomeTopRated();
+                        await fetchHomeTopRated(request);
                         return;
                     } else if (currentPage <= 15) {
                         document.getElementById('sectionTitle').innerText = 'Filmes Selecionados';
-                        await fetchHomeMoviesOnly();
+                        await fetchHomeMoviesOnly(request);
                         return;
                     }
-                } catch (e) { console.warn('Falha ao montar a Home por faixa de página; usando descoberta aleatória.', e); }
+                } catch { if (request !== catalogRequest) return; }
                 // A partir da página 16, mantém a descoberta aleatória original: embaralha resultados de páginas/ordenações variadas e evita IDs vistos nas últimas cinco páginas.
                 try {
                     const history = JSON.parse(sessionStorage.getItem('cinefia_home_page_history') || '[]');
@@ -376,23 +489,24 @@
                     let candidates = batches.flatMap(d => d.results || []).filter(item => item.poster_path && !recentIds.has(`movie-${item.id}`));
                     const seen = new Set();
                     candidates = shuffle(candidates).filter(item => { if (seen.has(item.id)) return false; seen.add(item.id); item.media_type='movie'; return true; });
-                    if (candidates.length < 12) {
+                    if (candidates.length < TITLES_PER_PAGE) {
                         const extra = await fetch(`${BASE_URL}/trending/all/week?api_key=${TMDB_API_KEY}&language=pt-BR&page=${Math.floor(Math.random()*20)+1}`).then(r => r.json());
                         candidates = candidates.concat((extra.results || []).filter(item => item.poster_path && !recentIds.has(`${item.media_type || (item.title?'movie':'tv')}-${item.id}`)).map(item => ({...item, media_type:item.media_type || (item.title?'movie':'tv')})));
                     }
-                    const pageItems = candidates.slice(0,20);
+                    if (request !== catalogRequest) return;
+                    const pageItems = uniqueTitles([...candidates, ...batches.flatMap(data => tagTitles(data.results || [], 'movie'))]).slice(0, TITLES_PER_PAGE);
                     renderGrid(pageItems);
                     history.push(pageItems.map(item => `${item.media_type || 'movie'}-${item.id}`));
                     sessionStorage.setItem('cinefia_home_page_history', JSON.stringify(history.slice(-5)));
                     totalPages = 500;
                     updatePagination();
                     return;
-                } catch(e) { console.warn('Falha na aleatorização da Home.', e); }
+                } catch { if (request !== catalogRequest) return; }
                 url = `${BASE_URL}/discover/movie?api_key=${TMDB_API_KEY}&language=pt-BR&sort_by=popularity.desc&page=${currentPage}`;
             } else if (currentMode === 'trending') {
                 url = `${BASE_URL}/trending/all/week?api_key=${TMDB_API_KEY}&language=pt-BR&page=${currentPage}`;
             } else if (currentMode === 'search') {
-                await fetchSmartTextSearch();
+                await fetchSmartTextSearch(request, page);
                 return;
             } else if (currentMode === 'categories') {
                 url = `${BASE_URL}/discover/movie?api_key=${TMDB_API_KEY}&language=pt-BR&with_genres=${currentCategory}&page=${currentPage}`;
@@ -405,32 +519,25 @@
             } else if (currentMode === 'series') {
                 url = `${BASE_URL}/discover/tv?api_key=${TMDB_API_KEY}&language=pt-BR&sort_by=popularity.desc&vote_count.gte=50&page=${currentPage}`;
             } else if (currentMode === 'genresearch') {
-                await fetchGenreSearch();
+                await fetchGenreSearch(request, page);
                 return;
             } else if (currentMode === 'mylist') {
-                await fetchMyList();
+                await fetchMyList(request, page);
                 return;
             } else if (currentMode === 'recommendations') {
-                await fetchRecommendations();
+                await fetchRecommendations(request, page);
                 return;
             } else if (currentMode === 'filters') {
-                await fetchFilteredContent();
+                await fetchFilteredContent(request, page);
                 return;
             }
 
             try {
-                const response = await fetch(url);
-                const data = await response.json();
-
-                if (data.results && data.results.length > 0) {
-                    totalPages = data.total_pages;
-                    renderGrid(data.results);
-                    updatePagination();
-                } else {
-                    grid.innerHTML = '<div class="message-box">Nenhum resultado encontrado.</div>';
-                }
-            } catch (error) {
-                showError("Erro de conexão. Verifique sua API Key.");
+                const sourceUrl = new URL(url);
+                sourceUrl.searchParams.delete('page');
+                showCatalogPage(await catalogPage([{url: sourceUrl.href}], page), request);
+            } catch {
+                if (request === catalogRequest) showError("Erro de conexão. Verifique sua API Key.");
             }
         }
 
@@ -510,7 +617,7 @@
             if (currentMode === 'mylist') fetchContent();
         }
 
-        async function fetchMyList() {
+        async function fetchMyList(request, page) {
             const grid = document.getElementById('resultsGrid');
             const pagination = document.getElementById('paginationContainer');
             pagination.style.display = 'none';
@@ -520,62 +627,64 @@
                 return;
             }
             try {
-                const results = await Promise.all(favorites.slice(0, 30).map(async item => {
-                    const response = await fetch(`${BASE_URL}/${item.type}/${item.id}?api_key=${TMDB_API_KEY}&language=pt-BR`);
-                    const data = await response.json();
+                const results = await Promise.allSettled(favorites.slice((page - 1) * TITLES_PER_PAGE, page * TITLES_PER_PAGE).map(async item => {
+                    const data = await fetchCinefiaJson(`${BASE_URL}/${item.type}/${item.id}?api_key=${TMDB_API_KEY}&language=pt-BR`);
                     return { ...data, media_type: item.type };
                 }));
-                renderGrid(results.filter(item => item && item.id));
+                showCatalogPage({
+                    items: results.filter(result => result.status === 'fulfilled').map(result => result.value),
+                    pages: Math.ceil(favorites.length / TITLES_PER_PAGE)
+                }, request, 'Não foi possível carregar os títulos desta página.');
             } catch (error) {
-                showError('Não foi possível carregar sua Minha Lista.');
+                if (request === catalogRequest) showError('Não foi possível carregar sua Minha Lista.');
             }
         }
 
         // --- RECOMENDAÇÕES ---
-        async function fetchRecommendations() {
+        async function fetchRecommendations(request, page) {
             const grid = document.getElementById('resultsGrid');
-            const pagination = document.getElementById('paginationContainer');
-            pagination.style.display = 'none';
+            const renew = document.getElementById('renewRecommendations');
+            const authReady = await cinefiaAuthStartup;
+            if (request !== catalogRequest) return;
+            if (!authReady) return showError('Não foi possível verificar sua sessão Cinéfia. Atualize a página e tente novamente.');
             if (!cinefiaAuthUser) {
                 grid.innerHTML = '<div class="message-box"><i class="fa-solid fa-lock" style="color:var(--accent);font-size:2rem;margin-bottom:12px;"></i><br>Recomendados é uma função exclusiva das contas Cinéfia.<br><span style="font-size:.9rem;">Entre ou cadastre-se para configurar seus gostos.</span><br><button class="feature-btn" style="margin-top:14px;" onclick="openProfileModal()"><i class="fa-solid fa-right-to-bracket"></i> Entrar ou cadastrar</button></div>';
                 return;
             }
-            const favorites = getCurrentFavoriteItems();
             try {
-                if (cinefiaAuthUser && cinefiaAccountPreferences && (cinefiaAccountPreferences.genres.length || cinefiaAccountPreferences.providers.length)) {
-                    const personalized = await fetchPreferenceDiscoverResults(24);
-                    if (personalized.length) {
-                        renderGrid(personalized);
-                        return;
-                    }
-                }
-                let pool = [];
-                const seeds = favorites.slice(0, 5);
-                if (seeds.length) {
-                    const responses = await Promise.all(seeds.map(item => fetch(`${BASE_URL}/${item.type}/${item.id}/recommendations?api_key=${TMDB_API_KEY}&language=pt-BR&page=1`).then(r => r.json()).catch(() => ({results:[]}))));
-                    responses.forEach(data => { pool.push(...(data.results || [])); });
-                } else {
-                    const trending = await fetch(`${BASE_URL}/trending/all/week?api_key=${TMDB_API_KEY}&language=pt-BR&page=1`).then(r => r.json());
-                    pool = trending.results || [];
-                }
-                const seen = new Set(favorites.map(item => `${item.type}-${item.id}`));
-                const unique = [];
-                pool.forEach(item => {
-                    const type = item.media_type || (item.title ? 'movie' : 'tv');
-                    const key = `${type}-${item.id}`;
-                    if (!seen.has(key) && !unique.some(x => `${x.media_type}-${x.id}` === key) && (item.poster_path || item.backdrop_path)) {
-                        unique.push({ ...item, media_type: type });
-                    }
-                });
-                const sorted = unique.sort((a,b) => (b.vote_average || 0) - (a.vote_average || 0)).slice(0, 24);
-                if (!sorted.length) {
-                    grid.innerHTML = '<div class="message-box">Ainda não há recomendações suficientes.</div>';
+                const user = cinefiaAuthUser;
+                const preferences = await getCinefiaPreferences(user);
+                if (request !== catalogRequest || user.id !== cinefiaAuthUser?.id) return;
+                const hasPreferences = preferences.genres.length || preferences.providers.length;
+                const sources = hasPreferences ? preferenceSources(preferences) : getCurrentFavoriteItems().slice(0, 5).map(item => ({
+                    url: `${BASE_URL}/${item.type}/${item.id}/recommendations?api_key=${TMDB_API_KEY}&language=pt-BR`
+                }));
+                if (!hasPreferences && !sources.length) {
+                    grid.innerHTML = '<div class="message-box">Escolha seus gostos na Experiência Cinéfia para receber sugestões.<br><button class="feature-btn" style="margin-top:14px" onclick="openCinefiaExperienceModal()">Escolher meus gostos</button></div>';
                     return;
                 }
-                renderGrid(sorted);
-            } catch (error) {
-                showError('Não foi possível gerar recomendações agora.');
+                const result = await catalogPage(sources, page, comparePopularity);
+                if (request !== catalogRequest || user.id !== cinefiaAuthUser?.id) return;
+                if (page > result.pages) {
+                    currentPage = 1;
+                    return fetchContent();
+                }
+                showCatalogPage(result, request, 'Nenhum título disponível para estes gostos.');
+                renew.hidden = false;
+                renew.disabled = result.pages < 2;
+            } catch {
+                if (request === catalogRequest) showError('Não foi possível gerar recomendações agora.');
             }
+        }
+
+        function comparePopularity(a, b) {
+            return (b.popularity || 0) - (a.popularity || 0);
+        }
+
+        function renewCinefiaRecommendations() {
+            if (currentMode !== 'recommendations' || totalPages < 2) return;
+            currentPage = currentPage < totalPages ? currentPage + 1 : 1;
+            fetchContent();
         }
 
         // --- FILTROS AVANÇADOS ---
@@ -622,9 +731,7 @@
             fetchContent();
         }
 
-        async function fetchFilteredContent() {
-            const grid = document.getElementById('resultsGrid');
-            const pagination = document.getElementById('paginationContainer');
+        async function fetchFilteredContent(request, page) {
             const type = document.getElementById('filterType').value;
             const genre = document.getElementById('filterGenre').value;
             const fromYear = document.getElementById('filterFromYear').value;
@@ -639,25 +746,25 @@
             const tvGenre = genreParts[1] || '';
 
             const buildMovie = () => {
-                const params = new URLSearchParams({ api_key: TMDB_API_KEY, language: 'pt-BR', region: 'BR', page: String(currentPage), sort_by: sort });
+                const params = new URLSearchParams({ api_key: TMDB_API_KEY, language: 'pt-BR', region: 'BR', sort_by: sort });
                 if (movieGenre) params.set('with_genres', movieGenre);
                 if (fromYear) params.set('primary_release_date.gte', `${fromYear}-01-01`);
                 if (toYear) params.set('primary_release_date.lte', `${toYear}-12-31`);
                 if (rating) params.set('vote_average.gte', rating);
                 if (language) params.set('with_original_language', language);
                 if (votes) params.set('vote_count.gte', votes);
-                return fetch(`${BASE_URL}/discover/movie?${params}`).then(r => r.json());
+                return {url: `${BASE_URL}/discover/movie?${params}`, type: 'movie'};
             };
             const buildTv = () => {
                 let tvSort = sort === 'primary_release_date.desc' ? 'first_air_date.desc' : sort;
-                const params = new URLSearchParams({ api_key: TMDB_API_KEY, language: 'pt-BR', page: String(currentPage), sort_by: tvSort });
+                const params = new URLSearchParams({ api_key: TMDB_API_KEY, language: 'pt-BR', sort_by: tvSort });
                 if (tvGenre) params.set('with_genres', tvGenre);
                 if (fromYear) params.set('first_air_date.gte', `${fromYear}-01-01`);
                 if (toYear) params.set('first_air_date.lte', `${toYear}-12-31`);
                 if (rating) params.set('vote_average.gte', rating);
                 if (language) params.set('with_original_language', language);
                 if (votes) params.set('vote_count.gte', votes);
-                return fetch(`${BASE_URL}/discover/tv?${params}`).then(r => r.json());
+                return {url: `${BASE_URL}/discover/tv?${params}`, type: 'tv'};
             };
 
             if (type === 'movie') requests.push(buildMovie());
@@ -665,24 +772,14 @@
             else { requests.push(buildMovie()); requests.push(buildTv()); }
 
             try {
-                const datasets = await Promise.all(requests);
-                const results = [];
-                let maxPages = 1;
-                datasets.forEach((data, idx) => {
-                    maxPages = Math.max(maxPages, data.total_pages || 1);
-                    (data.results || []).forEach(item => results.push({ ...item, media_type: idx === 0 && type !== 'all' ? type : (idx === 0 ? 'movie' : 'tv') }));
-                });
-                results.sort((a,b) => (b.popularity || 0) - (a.popularity || 0));
-                totalPages = Math.min(maxPages, 500);
-                renderGrid(results);
-                updatePagination();
+                showCatalogPage(await catalogPage(requests, page, comparePopularity), request);
             } catch (error) {
-                showError('Não foi possível aplicar os filtros.');
+                if (request === catalogRequest) showError('Não foi possível aplicar os filtros.');
             }
         }
 
         // --- PESQUISA INTELIGENTE POR GÊNERO (RESULTADO) ---
-        async function fetchGenreSearch() {
+        async function fetchGenreSearch(request, page) {
             const grid = document.getElementById('resultsGrid');
             const pagination = document.getElementById('paginationContainer');
             const config = currentGenreSearch;
@@ -696,46 +793,30 @@
                 const keywordId = config.keywordQuery ? await resolveKeywordId(config.keywordQuery) : null;
                 const requests = [];
                 if (config.movieGenre || keywordId) {
-                    const params = new URLSearchParams({ api_key: TMDB_API_KEY, language: 'pt-BR', region: 'BR', sort_by: 'vote_average.desc', 'vote_count.gte': '100', page: String(currentPage) });
+                    const params = new URLSearchParams({ api_key: TMDB_API_KEY, language: 'pt-BR', region: 'BR', sort_by: 'vote_average.desc', 'vote_count.gte': '100' });
                     if (keywordId) params.set('with_keywords', String(keywordId));
                     else if (config.movieGenre) params.set('with_genres', String(config.movieGenre));
                     if (config.originLanguage) params.set('with_original_language', config.originLanguage);
-                    requests.push(fetch(`${BASE_URL}/discover/movie?${params}`).then(r => r.json()).then(d => ({ d, type: 'movie' })));
+                    requests.push({url: `${BASE_URL}/discover/movie?${params}`, type: 'movie'});
                 }
                 if (config.tvGenre || keywordId) {
-                    const params = new URLSearchParams({ api_key: TMDB_API_KEY, language: 'pt-BR', sort_by: 'vote_average.desc', 'vote_count.gte': '30', page: String(currentPage) });
+                    const params = new URLSearchParams({ api_key: TMDB_API_KEY, language: 'pt-BR', sort_by: 'vote_average.desc', 'vote_count.gte': '30' });
                     if (keywordId) params.set('with_keywords', String(keywordId));
                     else if (config.tvGenre) params.set('with_genres', String(config.tvGenre));
                     if (config.originLanguage) params.set('with_original_language', config.originLanguage);
-                    requests.push(fetch(`${BASE_URL}/discover/tv?${params}`).then(r => r.json()).then(d => ({ d, type: 'tv' })));
+                    requests.push({url: `${BASE_URL}/discover/tv?${params}`, type: 'tv'});
                 }
-                const datasets = await Promise.all(requests);
-                let merged = [];
-                let maxPages = 1;
-                datasets.forEach(({ d, type }) => {
-                    maxPages = Math.max(maxPages, d.total_pages || 1);
-                    (d.results || []).forEach(item => { if (item.poster_path) merged.push({ ...item, media_type: type }); });
-                });
-                merged.sort((a, b) => (b.vote_average || 0) - (a.vote_average || 0));
-                if (!merged.length) {
-                    grid.innerHTML = `<div class="message-box">Nenhum resultado encontrado para "${config.label}".</div>`;
-                    pagination.style.display = 'none';
-                    return;
-                }
-                renderGrid(merged);
-                totalPages = Math.min(maxPages, 500);
-                updatePagination();
+                const compareRatings = (a, b) => (b.vote_average || 0) - (a.vote_average || 0);
+                showCatalogPage(await catalogPage(requests, page, compareRatings), request, `Nenhum resultado encontrado para "${config.label}".`);
             } catch (error) {
-                showError(`Não foi possível buscar por "${config.label}" agora.`);
+                if (request === catalogRequest) showError(`Não foi possível buscar por "${config.label}" agora.`);
             }
         }
 
         // --- PESQUISA POR TEXTO, COM DETECÇÃO DE ATOR/ATRIZ ---
         // Se o termo buscado corresponder ao nome de uma pessoa no TMDB, mostra os filmes/séries
         // em que ela está no Elenco. Caso contrário, cai na busca normal por título.
-        async function fetchSmartTextSearch() {
-            const grid = document.getElementById('resultsGrid');
-            const pagination = document.getElementById('paginationContainer');
+        async function fetchSmartTextSearch(request, page) {
             const query = currentSearchQuery;
             try {
                 const personRes = await fetch(`${BASE_URL}/search/person?api_key=${TMDB_API_KEY}&language=pt-BR&query=${encodeURIComponent(query)}&page=1`);
@@ -743,45 +824,31 @@
                 const topPerson = (personData.results || [])[0];
                 const normalizedQuery = normalizeSearchTerm(query);
 
-                if (topPerson && normalizeSearchTerm(topPerson.name) === normalizedQuery) {
+                if (Number.isSafeInteger(topPerson?.id) && normalizeSearchTerm(topPerson.name) === normalizedQuery) {
                     const creditsRes = await fetch(`${BASE_URL}/person/${topPerson.id}/combined_credits?api_key=${TMDB_API_KEY}&language=pt-BR`);
                     const creditsData = await creditsRes.json();
-                    const seen = new Set();
-                    const castItems = (creditsData.cast || []).filter(item => {
-                        if (!item.poster_path || (item.media_type !== 'movie' && item.media_type !== 'tv')) return false;
-                        const key = `${item.media_type}-${item.id}`;
-                        if (seen.has(key)) return false;
-                        seen.add(key);
-                        return true;
-                    }).sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
+                    const castItems = uniqueTitles(creditsData.cast || []).sort(comparePopularity);
 
                     if (castItems.length) {
+                        if (request !== catalogRequest) return;
                         document.getElementById('sectionTitle').innerText = `Elenco: ${topPerson.name}`;
-                        const perPage = 20;
-                        totalPages = Math.max(1, Math.ceil(castItems.length / perPage));
-                        const pageItems = castItems.slice((currentPage - 1) * perPage, currentPage * perPage);
-                        renderGrid(pageItems);
-                        updatePagination();
+                        showCatalogPage({
+                            items: castItems.slice((page - 1) * TITLES_PER_PAGE, page * TITLES_PER_PAGE),
+                            pages: Math.ceil(castItems.length / TITLES_PER_PAGE)
+                        }, request);
                         return;
                     }
                 }
             } catch (error) {
-                console.warn('Falha na pesquisa por ator/atriz; usando busca padrão.', error);
+                if (request !== catalogRequest) return;
             }
 
             // Busca padrão por título (comportamento original) quando não é reconhecido como ator/atriz.
             try {
-                const response = await fetch(`${BASE_URL}/search/multi?api_key=${TMDB_API_KEY}&language=pt-BR&query=${encodeURIComponent(query)}&page=${currentPage}`);
-                const data = await response.json();
-                if (data.results && data.results.length > 0) {
-                    totalPages = data.total_pages;
-                    renderGrid(data.results);
-                    updatePagination();
-                } else {
-                    grid.innerHTML = '<div class="message-box">Nenhum resultado encontrado.</div>';
-                }
+                const url = `${BASE_URL}/search/multi?api_key=${TMDB_API_KEY}&language=pt-BR&query=${encodeURIComponent(query)}`;
+                showCatalogPage(await catalogPage([{url}], page), request);
             } catch (error) {
-                showError('Erro de conexão. Verifique sua API Key.');
+                if (request === catalogRequest) showError('Erro de conexão. Verifique sua API Key.');
             }
         }
 
@@ -814,7 +881,7 @@
 
         function getTrailerCandidates(videos) {
             return (videos || [])
-                .filter(video => video.site === 'YouTube' && video.key && ['Trailer', 'Teaser'].includes(video.type))
+                .filter(video => video.site === 'YouTube' && /^[A-Za-z0-9_-]{11}$/.test(video.key || '') && ['Trailer', 'Teaser'].includes(video.type))
                 .sort((a, b) =>
                     Number(Boolean(b.official)) - Number(Boolean(a.official)) ||
                     Number(b.type === 'Trailer') - Number(a.type === 'Trailer') ||
@@ -956,7 +1023,7 @@
             }
             iframe.src = `https://www.youtube.com/embed/${encodeURIComponent(trailer.key)}?${playerParams.toString()}`;
             iframe.title = `${currentTrailerTitle} — Trailer`;
-            iframe.allow = 'autoplay; encrypted-media; picture-in-picture; web-share';
+            iframe.allow = 'autoplay; encrypted-media; picture-in-picture; web-share; fullscreen';
             iframe.allowFullscreen = true;
             iframe.referrerPolicy = 'strict-origin-when-cross-origin';
             wrap.appendChild(iframe);
@@ -968,7 +1035,7 @@
             });
         }
 
-        async function openTrailer(movieId, title = '') {
+        async function openTrailer(movieId, title = '', type = 'movie') {
             currentTrailerTitle = title || document.querySelector('#modalContent .modal-title')?.textContent?.trim() || 'Trailer';
             const overlay = document.getElementById('trailerOverlay');
             const wrap = document.getElementById('trailerFrameWrap');
@@ -982,14 +1049,13 @@
             overlay.classList.add('active');
 
             try {
-                const response = await fetch(`${BASE_URL}/movie/${movieId}/videos?api_key=${TMDB_API_KEY}&language=pt-BR&include_video_language=pt-BR,en-US,null`);
-                if (!response.ok) throw new Error('Não foi possível consultar os trailers no TMDB.');
-                const data = await response.json();
+                const mediaType = type === 'tv' ? 'tv' : 'movie';
+                const data = await fetchFichaJson(`${BASE_URL}/${mediaType}/${movieId}/videos?api_key=${TMDB_API_KEY}&language=pt-BR&include_video_language=pt-BR,en-US,null`);
                 if (requestId !== trailerOpenRequestId) return;
 
                 trailerCandidates = getTrailerCandidates(data.results || []);
                 if (!trailerCandidates.length) {
-                    wrap.innerHTML = '<div class="trailer-message">Este filme não possui um trailer disponível no TMDB.</div>';
+                    wrap.innerHTML = '<div class="trailer-message">Trailer não localizado no TMDB.</div>';
                     return;
                 }
 
@@ -1015,15 +1081,39 @@
         }
 
         // --- SURPREENDA-ME ---
+        let lastSurprise = '';
         async function surpriseMe() {
+            const control = document.getElementById('navSurprise');
+            if (control.dataset.busy) return;
+            control.dataset.busy = 'true';
+            control.setAttribute('aria-busy', 'true');
+            const request = catalogRequest;
             try {
-                const data = await fetch(`${BASE_URL}/trending/all/week?api_key=${TMDB_API_KEY}&language=pt-BR&page=1`).then(r => r.json());
-                const choices = (data.results || []).filter(item => item.poster_path && (item.media_type === 'movie' || item.media_type === 'tv'));
-                if (!choices.length) return;
-                const pick = choices[Math.floor(Math.random() * choices.length)];
+                if (!await cinefiaAuthStartup) throw new Error('Sessão indisponível');
+                const user = cinefiaAuthUser;
+                const preferences = user ? await getCinefiaPreferences(user) : null;
+                if (request !== catalogRequest || user?.id !== cinefiaAuthUser?.id) return;
+                if (user && !preferences.genres.length && !preferences.providers.length) {
+                    return openCinefiaExperienceModal();
+                }
+                const sources = user ? preferenceSources(preferences) : [{url: `${BASE_URL}/trending/all/week?api_key=${TMDB_API_KEY}&language=pt-BR`}];
+                const sort = user ? comparePopularity : undefined;
+                const first = await catalogPage(sources, 1, sort);
+                const second = first.pages > 1 ? await catalogPage(sources, 2, sort) : {items: []};
+                if (request !== catalogRequest || user?.id !== cinefiaAuthUser?.id) return;
+                const choices = [...first.items, ...second.items];
+                if (!choices.length) return showCatalogNotice('Nenhuma surpresa encontrada para estas preferências.');
+                const fresh = choices.filter(item => `${item.media_type}-${item.id}` !== lastSurprise);
+                const pool = fresh.length ? fresh : choices;
+                const pick = pool[Math.floor(Math.random() * pool.length)];
+                lastSurprise = `${pick.media_type}-${pick.id}`;
+                showCatalogNotice();
                 openDetails(pick.id, pick.media_type);
-            } catch (error) {
-                showError('Não foi possível escolher uma recomendação agora.');
+            } catch {
+                if (request === catalogRequest) showCatalogNotice('Não foi possível escolher uma surpresa agora.');
+            } finally {
+                delete control.dataset.busy;
+                control.removeAttribute('aria-busy');
             }
         }
 
@@ -1031,12 +1121,10 @@
             const grid = document.getElementById('resultsGrid');
             grid.innerHTML = '';
 
-            items.forEach(item => {
-                if (!item.poster_path && !item.profile_path) return;
-
-                const title = item.title || item.name;
+            uniqueTitles(tagTitles(items)).slice(0, TITLES_PER_PAGE).forEach(item => {
+                const title = escapeCinefiaHtml(item.title || item.name);
                 const date = item.release_date || item.first_air_date || '';
-                const year = date ? date.split('-')[0] : 'N/A';
+                const year = escapeCinefiaHtml(date ? date.split('-')[0] : 'N/A');
                 const rating = item.vote_average ? item.vote_average.toFixed(1) : 'NR';
                 const imagePath = item.poster_path || item.profile_path;
                 const mediaType = item.media_type || (item.title ? 'movie' : 'tv');
@@ -1047,7 +1135,7 @@
 
                 card.innerHTML = `
                     <div class="card-img-wrapper">
-                        <button class="favorite-btn ${isFavorite(item.id, mediaType) ? 'active' : ''}" onclick="event.stopPropagation(); toggleFavorite(${item.id}, '${mediaType}');"><i class="fa-${isFavorite(item.id, mediaType) ? 'solid' : 'regular'} fa-heart"></i></button>
+                        <button class="favorite-btn ${isFavorite(item.id, mediaType) ? 'active' : ''}" aria-label="Adicionar ou remover da Minha Lista"><i class="fa-${isFavorite(item.id, mediaType) ? 'solid' : 'regular'} fa-heart"></i></button>
                         <img src="${IMG_BASE_URL}${imagePath}" alt="${title}" class="card-img" loading="lazy">
                         ${rating !== 'NR' ? `<div class="rating-badge"><i class="fa-solid fa-star"></i> ${rating}</div>` : ''}
                     </div>
@@ -1056,44 +1144,85 @@
                         <div class="card-meta">${year} • ${mediaType === 'tv' ? 'Série' : 'Filme'} • <span class="cinefia-score"> CFS ${calculateCinefiaScore(item)}</span></div>
                     </div>
                 `;
+                card.querySelector('.favorite-btn').addEventListener('click', event => {
+                    event.stopPropagation();
+                    toggleFavorite(item.id, mediaType);
+                });
                 grid.appendChild(card);
             });
         }
 
         /* --- DETALHES + INTEGRAÇÃO TMDB & OMDB + ONDE ASSISTIR --- */
+        let fichaRequestId = 0;
+        const fichaCache = new Map();
+
+        function fetchFichaJson(url) {
+            const cached = fichaCache.get(url);
+            if (cached?.expires > Date.now()) return cached.promise;
+            const promise = fetchCinefiaJson(url, {signal: AbortSignal.timeout(10000)}).catch(error => {
+                if (fichaCache.get(url)?.promise === promise) fichaCache.delete(url);
+                throw error;
+            });
+            fichaCache.delete(url);
+            fichaCache.set(url, {promise, expires: Date.now() + 600000});
+            if (fichaCache.size > 48) fichaCache.delete(fichaCache.keys().next().value);
+            return promise;
+        }
+
         async function openDetails(id, type) {
-            if (type === 'person') return;
+            if (!Number.isSafeInteger(id) || id <= 0 || !['movie', 'tv'].includes(type)) return;
 
             const modal = document.getElementById('detailsModal');
             const content = document.getElementById('modalContent');
-            content.innerHTML = '<div style="padding: 4rem; width: 100%; text-align: center;"><div class="spinner"></div></div>';
+            const previousScroll = modal.classList.contains('active') && content.dataset.fichaKey === `${type}-${id}` ? content.scrollTop : 0;
+            const requestId = ++fichaRequestId;
+            closeDetailSidePanel();
+            content.onscroll = null;
+            content.classList.remove('ficha-explored');
+            fichaPinObserver?.disconnect();
+            content.innerHTML = fichaTopBar() + '<div class="ficha-loading" role="status"><div class="spinner"></div> Carregando ficha…</div>';
             modal.classList.add('active');
+            content.scrollTop = 0;
+            content.querySelector('.ficha-back')?.focus({preventScroll: true});
 
             try {
-                const detailsUrl = `${BASE_URL}/${type}/${id}?api_key=${TMDB_API_KEY}&language=pt-BR&append_to_response=release_dates,content_ratings,watch/providers,external_ids,credits,videos&include_video_language=pt-BR,en-US,null`;
-                const res = await fetch(detailsUrl);
-                const data = await res.json();
-
-                let omdbData = null;
+                const ratingResource = type === 'tv' ? 'content_ratings' : 'release_dates';
+                const detailsUrl = `${BASE_URL}/${type}/${id}?api_key=${TMDB_API_KEY}&language=pt-BR&append_to_response=${ratingResource},watch/providers,external_ids,credits`;
+                const data = await fetchFichaJson(detailsUrl);
+                if (data.id !== id) throw new Error('Ficha indisponível');
+                if (requestId !== fichaRequestId || !modal.classList.contains('active')) return;
+                renderModal(data, type);
+                content.scrollTop = previousScroll;
                 const imdbId = data.imdb_id || data.external_ids?.imdb_id;
-                if (imdbId && OMDB_API_KEY) {
-                    try {
-                        const omdbRes = await fetch(`https://www.omdbapi.com/?apikey=${OMDB_API_KEY}&i=${imdbId}`);
-                        omdbData = await omdbRes.json();
-                    } catch(e) { console.error("Erro ao buscar dados do OMDb:", e); }
+                if (/^tt\d+$/.test(imdbId || '') && OMDB_API_KEY) {
+                    void fetchFichaJson(`https://www.omdbapi.com/?apikey=${OMDB_API_KEY}&i=${imdbId}`).then(omdbData => {
+                        if (requestId === fichaRequestId && modal.classList.contains('active')) {
+                            content.querySelector('.external-scores')?.insertAdjacentHTML('beforeend', omdbScoreMarkup(omdbData));
+                        }
+                    }).catch(() => {});
                 }
-
-                renderModal(data, type, omdbData);
-            } catch (error) {
-                content.innerHTML = '<div style="padding: 2rem; color: white;">Erro ao carregar detalhes.</div>';
+            } catch {
+                if (requestId !== fichaRequestId || !modal.classList.contains('active')) return;
+                content.innerHTML = fichaTopBar() + '<div class="ficha-loading" role="status">Erro ao carregar detalhes. Volte e tente novamente.</div>';
             }
         }
 
-        function renderModal(data, type, omdbData = null) {
+        function omdbScoreMarkup(data) {
+            if (!data || data.Response === 'False') return '';
+            const rotten = Array.isArray(data.Ratings) ? data.Ratings.find(rating => rating.Source === 'Rotten Tomatoes')?.Value : null;
+            return [
+                [data.imdbRating, 'IMDb', 'fa-brands fa-imdb'],
+                [rotten, 'Rotten', 'fa-solid fa-apple-whole']
+            ].filter(([value]) => value && value !== 'N/A').map(([value, label, icon]) =>
+                `<div class="score-badge"><i class="${icon}" aria-hidden="true"></i> ${label}: ${escapeCinefiaHtml(value)}</div>`
+            ).join('');
+        }
+
+        function renderModal(data, type) {
             const content = document.getElementById('modalContent');
             const title = data.title || data.name;
             const overview = data.overview || 'Sinopse não disponível em português.';
-            const poster = data.poster_path ? `${IMG_BASE_URL}${data.poster_path}` : 'https://via.placeholder.com/500x750?text=Sem+Imagem';
+            const poster = validTmdbImage(data.poster_path) ? `${IMG_BASE_URL}${data.poster_path}` : 'https://via.placeholder.com/500x750?text=Sem+Imagem';
 
             const releaseDate = data.release_date || data.first_air_date || 'N/A';
             const year = releaseDate !== 'N/A' ? releaseDate.split('-')[0] : 'N/A';
@@ -1101,25 +1230,20 @@
             const duration = data.runtime ? `${data.runtime} min` : (data.episode_run_time && data.episode_run_time[0] ? `${data.episode_run_time[0]} min` : 'N/A');
             const status = data.status || 'N/A';
 
-            let ageRating = 'Livre';
-            let ageColor = '#4ade80';
+            let ageRating = '';
 
             if (type === 'movie' && data.release_dates && data.release_dates.results) {
                 const brRelease = data.release_dates.results.find(r => r.iso_3166_1 === 'BR');
-                if (brRelease && brRelease.release_dates[0]?.certification) ageRating = brRelease.release_dates[0].certification;
+                const classification = brRelease?.release_dates?.find(release => release.certification)?.certification;
+                if (classification) ageRating = classification;
             } else if (type === 'tv' && data.content_ratings && data.content_ratings.results) {
                 const brRating = data.content_ratings.results.find(r => r.iso_3166_1 === 'BR');
-                if (brRating) ageRating = brRating.rating;
+                if (brRating?.rating) ageRating = brRating.rating;
             }
 
-            if(ageRating === '18') ageColor = '#ef4444';
-            else if(ageRating === '16') ageColor = '#f97316';
-            else if(ageRating === '14' || ageRating === '12') ageColor = '#eab308';
-            else if(ageRating === '10') ageColor = '#3b82f6';
+            const genres = data.genres ? data.genres.map(g => `<span class="tag">${escapeCinefiaHtml(g.name)}</span>`).join('') : '';
 
-            const genres = data.genres ? data.genres.map(g => `<span class="tag">${g.name}</span>`).join('') : '';
-
-            let scoresHtml = `
+            const scoresHtml = `
                 <div class="score-badge">
                     <i class="fa-solid fa-star" style="color: #f5c518"></i> TMDB: ${data.vote_average ? data.vote_average.toFixed(1) : 'N/A'}
                 </div>
@@ -1128,30 +1252,11 @@
                 </div>
             `;
 
-            if (omdbData && omdbData.Response !== "False") {
-                if (omdbData.imdbRating && omdbData.imdbRating !== 'N/A') {
-                    scoresHtml += `
-                        <div class="score-badge">
-                            <i class="fa-brands fa-imdb" style="color: #f5c518"></i> IMDb: ${omdbData.imdbRating}
-                        </div>
-                    `;
-                }
-                if (omdbData.Ratings) {
-                    const rt = omdbData.Ratings.find(r => r.Source === 'Rotten Tomatoes');
-                    if (rt) {
-                        scoresHtml += `
-                            <div class="score-badge">
-                                <i class="fa-solid fa-apple-whole" style="color: #fa320a"></i> Rotten: ${rt.Value}
-                            </div>
-                        `;
-                    }
-                }
-            }
-
             let providersHtml = '';
             const watchProviders = data['watch/providers']?.results?.BR;
-            if (watchProviders && (watchProviders.flatrate || watchProviders.rent || watchProviders.buy)) {
-                const list = watchProviders.flatrate || watchProviders.rent || watchProviders.buy;
+            const providers = [...new Map(['flatrate', 'free', 'ads', 'rent', 'buy'].flatMap(key => watchProviders?.[key] || []).map(item => [item.provider_id ?? item.provider_name, item])).values()];
+            if (providers.length) {
+                const list = providers;
                 const providerLoginUrl = (name) => {
                     const n = (name || '').toLowerCase();
                     const known = [
@@ -1174,10 +1279,12 @@
                     return (known.find(([pattern]) => pattern.test(n)) || [null, null])[1];
                 };
                 const unmatchedProviders = list.filter(p => !providerLoginUrl(p.provider_name)).map(p => p.provider_name);
-                const logosHtml = list.map(p => {
+                const logosHtml = list.map((p, index) => {
                     const href = providerLoginUrl(p.provider_name);
-                    const logo = `<img src="${IMG_BASE_URL}${p.logo_path}" alt="${p.provider_name}" title="${p.provider_name}${href ? ' — abrir serviço' : ' — URL de acesso não configurada'}" class="provider-logo">`;
-                    return href ? `<a class="provider-link" href="${href}" target="_blank" rel="noopener noreferrer" aria-label="Abrir ${p.provider_name}">${logo}</a>` : `<span class="provider-link provider-link-unmapped" title="URL de acesso não configurada para ${p.provider_name}">${logo}<small>URL pendente</small></span>`;
+                    const name = escapeCinefiaHtml(p.provider_name);
+                    const logo = `<img src="${IMG_BASE_URL}${escapeCinefiaHtml(p.logo_path)}" alt="${name}" title="${name}${href ? ' — abrir serviço' : ' — URL de acesso não configurada'}" class="provider-logo">`;
+                    const hidden = index >= 9 ? ' hidden data-ficha-extra-provider' : '';
+                    return href ? `<a class="provider-link" href="${href}" target="_blank" rel="noopener noreferrer" aria-label="Abrir ${name}"${hidden}>${logo}</a>` : `<span class="provider-link provider-link-unmapped" title="URL de acesso não configurada para ${name}"${hidden}>${logo}<small>URL pendente</small></span>`;
                 }).join('');
                 if (unmatchedProviders.length) console.warn('[Cinéfia] URLs de acesso pendentes para provedores:', [...new Set(unmatchedProviders)]);
                 providersHtml = `
@@ -1188,178 +1295,200 @@
                 `;
             }
 
-            // Informações adicionais de filmes: orçamento, receita, diretor e escritores.
-            let advancedHtml = '';
-            if (type === 'movie') {
-                const director = (data.credits?.crew || []).filter(p => p.job === 'Director').map(p => p.name).filter((v, i, a) => a.indexOf(v) === i).join(', ') || 'Não informado';
-                const writers = (data.credits?.crew || []).filter(p => ['Writer', 'Screenplay', 'Story'].includes(p.job)).map(p => p.name).filter((v, i, a) => a.indexOf(v) === i).join(', ') || 'Não informado';
-                const budget = data.budget ? `US$ ${Number(data.budget).toLocaleString('en-US')}` : 'Não informado';
-                const revenue = data.revenue ? `US$ ${Number(data.revenue).toLocaleString('en-US')}` : 'Não informado';
-                const isFav = isFavorite(data.id, 'movie');
-                const score = calculateCinefiaScore(data);
-                const trailerExists = findBestTrailer(data.videos?.results || []) !== null;
-                const castPeople = (data.credits?.cast || []).filter(p => p.profile_path).slice(0, 12);
-                advancedHtml = `
-                    <details class="expandable-details">
-                        <summary>Mais informações do filme</summary>
-                        <div class="expandable-body">
-                            <div class="feature-actions">
-                                <button class="feature-btn ${trailerExists ? '' : 'disabled'}" ${trailerExists ? `onclick="openTrailer(${data.id})"` : 'disabled'}><i class="fa-solid fa-play"></i> ${trailerExists ? 'Assistir trailer' : 'Trailer indisponível'}</button>
-                                <button class="favorite-detail-btn ${isFav ? 'active' : ''}" onclick="toggleFavorite(${data.id}, 'movie')"><i class="fa-${isFav ? 'solid' : 'regular'} fa-heart"></i> ${isFav ? 'Na Minha Lista' : 'Minha Lista'}</button>
-                            </div>
-                            <div class="crew-grid">
-                                <div class="crew-item"><span>Diretor</span><strong>${director}</strong></div>
-                                <div class="crew-item"><span>Escritor(es)</span><strong>${writers}</strong></div>
-                                <div class="crew-item"><span>Orçamento</span><strong>${budget}</strong></div>
-                                <div class="crew-item"><span>Receita</span><strong>${revenue}</strong></div>
-                            </div>
-                            <div class="crew-item"><span>Cinéfia Score</span><strong class="cinefia-score">${score}/100</strong></div>
-                        </div>
-                    </details>
-                `;
-                if (castPeople.length) {
-                    advancedHtml += `
-                        <details class="expandable-details">
-                            <summary>Elenco</summary>
-                            <div class="expandable-body">
-                                <div class="cast-grid">
-                                    ${castPeople.map(p => `<div class="cast-card"><img class="cast-img" src="https://image.tmdb.org/t/p/w185${p.profile_path}" alt="${p.name}" loading="lazy"><div><div class="cast-name">${p.name}</div><div class="cast-character">${p.character || 'Personagem não informado'}</div></div></div>`).join('')}
-                                </div>
-                            </div>
-                        </details>
-                    `;
-                }
-            } else {
-                const creators = data.created_by?.map(p => p.name).join(', ') || 'Não informado';
-                const isFav = isFavorite(data.id, 'tv');
-                const score = calculateCinefiaScore(data);
-                advancedHtml = `
-                    <details class="expandable-details" id="episodesDetails" ontoggle="handleEpisodesToggle(${data.id}, this)">
-                        <summary>Episódios e avaliações</summary>
-                        <div class="expandable-body">
-                            <div class="feature-actions">
-                                <button class="favorite-detail-btn ${isFav ? 'active' : ''}" onclick="toggleFavorite(${data.id}, 'tv')"><i class="fa-${isFav ? 'solid' : 'regular'} fa-heart"></i> ${isFav ? 'Na Minha Lista' : 'Minha Lista'}</button>
-                            </div>
-                            <div class="crew-grid">
-                                <div class="crew-item"><span>Criador(es)</span><strong>${creators}</strong></div>
-                                <div class="crew-item"><span>Temporadas</span><strong>${data.number_of_seasons ?? 'N/A'}</strong></div>
-                                <div class="crew-item"><span>Episódios</span><strong>${data.number_of_episodes ?? 'N/A'}</strong></div>
-                                <div class="crew-item"><span>Status</span><strong>${status}</strong></div>
-                            </div>
-                            <div class="crew-item"><span>Cinéfia Score</span><strong class="cinefia-score">${score}/100</strong></div>
-                            <div class="episodes-toolbar">
-                                <div>
-                                    <span class="episode-select-label">Temporada</span>
-                                    <select class="season-select" id="seasonSelect_${data.id}" onchange="loadSeasonEpisodes(${data.id}, this.value)">
-                                        ${(data.seasons || []).map(s => `<option value="${s.season_number}">${s.name}</option>`).join('')}
-                                    </select>
-                                </div>
-                            </div>
-                            <div class="episode-grid" id="episodeGrid_${data.id}"><div class="episode-loading"><div class="spinner"></div><p style="margin-top:10px;">Selecione uma temporada para ver os episódios.</p></div></div>
-                        </div>
-                    </details>
-                `;
-                const castPeople = (data.credits?.cast || []).filter(p => p.profile_path).slice(0, 12);
-                if (castPeople.length) {
-                    advancedHtml += `
-                        <details class="expandable-details">
-                            <summary>Elenco</summary>
-                            <div class="expandable-body">
-                                <div class="cast-grid">
-                                    ${castPeople.map(p => `<div class="cast-card"><img class="cast-img" src="https://image.tmdb.org/t/p/w185${p.profile_path}" alt="${p.name}" loading="lazy"><div><div class="cast-name">${p.name}</div><div class="cast-character">${p.character || 'Personagem não informado'}</div></div></div>`).join('')}
-                                </div>
-                            </div>
-                        </details>
-                    `;
-                }
-            }
+            renderCinefiaFullSheet(content, data, type, {title, poster, year, duration, status, overview, genres, scoresHtml, ageRating, providersHtml, providerCount: providers.length});
+        }
 
-            // Comentários e avaliações compartilhados pelo Supabase (o conteúdo é carregado ao abrir o painel).
-            advancedHtml += `
-                <details class="expandable-details cinefia-comments-details" ontoggle="if (this.open) loadCinefiaComments(${Number(data.id)}, '${type}')">
-                    <summary>Comentários e avaliações</summary>
-                    <div class="expandable-body">
-                        <div class="cinefia-comments-container" id="cinefiaCommentsBody-${type}-${Number(data.id)}">
-                            <div class="cinefia-comments-loading"><div class="spinner"></div><p>Conectando aos comentários compartilhados…</p></div>
-                        </div>
-                    </div>
-                </details>
-            `;
+        /* A ficha em tela cheia reaproveita os serviços e as ações do Cinéfia. */
+        let fichaPinObserver;
+        let fichaCinemaCache;
+
+        function fichaTopBar() {
+            return `<div class="ficha-topbar"><div class="ficha-shell">
+                <button class="feature-btn ficha-back" type="button" onclick="forceCloseModal()"><i class="fa-solid fa-arrow-left" aria-hidden="true"></i> Voltar</button>
+                <span>Cinéfia <b>/</b> Ficha do título</span>
+            </div></div>`;
+        }
+
+        function fichaEpisodeCard(episode, still, rating, airDate, overview) {
+            const safe = escapeCinefiaHtml;
+            return `<article class="episode-card">
+                <img class="episode-img" src="${safe(still)}" alt="" loading="lazy">
+                <div class="episode-content">
+                    <div class="episode-meta"><span class="episode-number">EP. ${safe(episode.episode_number)}</span>${episode.runtime ? `<span>${safe(episode.runtime)} min</span>` : ''}<span class="episode-rating"><i class="fa-solid fa-star" aria-hidden="true"></i> ${safe(rating)}</span></div>
+                    <div class="episode-title">${safe(episode.name || 'Episódio sem título')}</div>
+                    <details class="ficha-episode-synopsis"><summary>Sinopse do episódio</summary><p>${safe(overview)}</p></details>
+                    ${episode.air_date ? `<time class="ficha-air-date" datetime="${safe(episode.air_date)}" title="Data de exibição">${safe(airDate)}</time>` : '<span class="ficha-air-date">Data indisponível</span>'}
+                </div>
+            </article>`;
+        }
+
+        function fichaNowPlaying() {
+            if (fichaCinemaCache?.key === TMDB_API_KEY && fichaCinemaCache.until > Date.now()) return fichaCinemaCache.promise;
+            const url = `${BASE_URL}/movie/now_playing?api_key=${TMDB_API_KEY}&language=pt-BR&region=BR`;
+            const get = async page => {
+                const response = await fetch(`${url}&page=${page}`);
+                if (!response.ok) throw new Error('Cartaz indisponível');
+                return response.json();
+            };
+            const promise = get(1).then(async first => {
+                const pages = await Promise.allSettled(Array.from({length: Math.min(3, Math.max(0, (first.total_pages || 1) - 1))}, (_, index) => get(index + 2)));
+                return new Set([first, ...pages.filter(page => page.status === 'fulfilled').map(page => page.value)].flatMap(page => (page.results || []).map(item => Number(item.id))));
+            }).catch(() => new Set());
+            fichaCinemaCache = {key: TMDB_API_KEY, until: Date.now() + 10 * 60 * 1000, promise};
+            return promise;
+        }
+
+        function renderCinefiaFullSheet(content, data, type, view) {
+            const safe = escapeCinefiaHtml;
+            const isTV = type === 'tv';
+            const id = Number(data.id);
+            const title = view.title || 'Título sem nome';
+            const favorite = isFavorite(id, type);
+            const crew = data.credits?.crew || [];
+            const people = jobs => [...new Set(crew.filter(person => jobs.includes(person.job)).map(person => person.name).filter(Boolean))].join(', ');
+            const dollars = value => Number(value) > 0 ? `US$ ${Number(value).toLocaleString('pt-BR')}` : 'Não informado';
+            const statusLabels = {Released:'Lançado', Ended:'Encerrada', Canceled:'Cancelada', 'Returning Series':'Em andamento', 'In Production':'Em produção', Planned:'Planejado', 'Post Production':'Pós-produção'};
+            const age = /^(l|livre)$/i.test(view.ageRating) ? 'L' : view.ageRating;
+            const ageColors = {L:'#21aa59',10:'#287ccb',12:'#eab308',14:'#ef812d',16:'#ce293b',18:'#080808'};
+            const ageText = age === 'L' ? 'Livre' : age;
+            const rating = age ? `<span class="age-rating ficha-age" style="--ficha-age-color:${Object.hasOwn(ageColors, age) ? ageColors[age] : '#343640'}" aria-label="Classificação indicativa ${safe(ageText)}">${safe(age)}</span>` : 'Não informada';
+            const info = [
+                ['Lançamento', view.year], ['Duração', view.duration], ['Tipo', isTV ? 'Série de TV' : 'Filme'],
+                ['Classificação', rating, true], ['Status', statusLabels[view.status] || view.status],
+                ...(isTV ? [['Criador(es)', data.created_by?.map(person => person.name).join(', ')], ['Temporadas', data.number_of_seasons], ['Episódios', data.number_of_episodes]] : [['Diretor', people(['Director'])], ['Escritor(es)', people(['Writer', 'Screenplay', 'Story'])]]),
+                ['Orçamento', dollars(data.budget)], ['Receita', dollars(data.revenue)]
+            ];
+            const cast = (data.credits?.cast || []).slice(0, 12);
+            const castMarkup = cast.length ? `<div class="cast-grid">${cast.map(person => `<div class="cast-card">
+                ${person.profile_path ? `<img class="cast-img" src="https://image.tmdb.org/t/p/w185${safe(person.profile_path)}" alt="" loading="lazy">` : '<span class="ficha-cast-placeholder"><i class="fa-solid fa-user" aria-hidden="true"></i></span>'}
+                <div><div class="cast-name">${safe(person.name)}</div><div class="cast-character">${safe(person.character || 'Personagem não informado')}</div></div>
+            </div>`).join('')}</div>` : '<p class="ficha-note">Elenco não localizado.</p>';
+            const backdrop = /^\/[\w.-]+$/.test(data.backdrop_path || '') ? ` style="--ficha-backdrop:url(https://image.tmdb.org/t/p/w1280${data.backdrop_path})"` : '';
+            const seasons = data.seasons || [];
 
             closeDetailSidePanel();
-            content.innerHTML = `
-                <button class="modal-close" onclick="forceCloseModal()"><i class="fa-solid fa-xmark"></i></button>
-                <img src="${poster}" alt="${title}" class="modal-img">
-                <div class="modal-info">
-                    <h2 class="modal-title">${title}</h2>
-
-                    <div class="modal-tags">
-                        <span class="age-rating" style="background-color: ${ageColor}">${ageRating}</span>
-                        ${genres}
+            content.dataset.fichaKey = `${type}-${id}`;
+            content.innerHTML = `${fichaTopBar()}
+                <div class="ficha-art"${backdrop} aria-hidden="true"></div>
+                <div class="ficha-shell ficha-body">
+                    <section class="ficha-intro" aria-labelledby="ficha-title">
+                        <img src="${safe(view.poster)}" alt="Pôster de ${safe(title)}" class="modal-img">
+                        <div class="ficha-copy">
+                            <span class="ficha-kicker">${isTV ? 'Série' : 'Filme'}</span>
+                            <h2 class="modal-title" id="ficha-title">${safe(title)}</h2>
+                            <div class="modal-tags">${view.genres}</div>
+                            <div class="external-scores">${view.scoresHtml}</div>
+                            <div class="synopsis-section">
+                                <h3>Sinopse</h3><p class="modal-desc synopsis-collapsed">${safe(view.overview)}</p>
+                                <button class="synopsis-more-btn" type="button" style="display:none" onclick="openSynopsisQuadrant()"><i class="fa-solid fa-expand" aria-hidden="true"></i> Mostrar mais</button>
+                            </div>
+                        </div>
+                    </section>
+                    <div class="ficha-pin">
+                        <section class="ficha-panel ficha-streaming" aria-labelledby="ficha-streaming-title">
+                            <h3 id="ficha-streaming-title"><i class="fa-solid fa-tv" aria-hidden="true"></i> Onde assistir</h3>
+                            ${view.providersHtml || `<p class="ficha-note" id="ficha-availability">${isTV ? 'Disponibilidade da série não localizada no Brasil.' : 'Streaming não localizado no Brasil.'}</p>`}
+                            ${view.providerCount > 9 ? `<button class="feature-btn ficha-providers-more" type="button" aria-expanded="false">Ver todas (${view.providerCount}) <i class="fa-solid fa-arrow-right" aria-hidden="true"></i></button>` : ''}
+                        </section>
+                        <section class="ficha-panel ficha-info" aria-labelledby="ficha-info-title">
+                            <h3 id="ficha-info-title"><i class="fa-solid fa-circle-info" aria-hidden="true"></i> Informações</h3>
+                            <dl class="ficha-info-grid">${info.map(([label, value, html]) => `<div><dt>${label}</dt><dd>${html ? value : safe(value ?? 'Não informado')}</dd></div>`).join('')}</dl>
+                            <div class="feature-actions">
+                                <button class="feature-btn ficha-trailer" type="button"><i class="fa-solid fa-play" aria-hidden="true"></i> Assistir ao trailer</button>
+                                <button class="favorite-detail-btn ${favorite ? 'active' : ''}" type="button"><i class="fa-${favorite ? 'solid' : 'regular'} fa-heart" aria-hidden="true"></i> ${favorite ? 'Na Minha Lista' : 'Adicionar à Minha Lista'}</button>
+                            </div>
+                        </section>
+                        <div class="ficha-comments-row"><button class="feature-btn ficha-comments-button" type="button" aria-controls="detailSideOverlay" aria-expanded="false"><i class="fa-regular fa-comments" aria-hidden="true"></i> Comentários e avaliações <i class="fa-solid fa-arrow-right" aria-hidden="true"></i></button></div>
                     </div>
-
-                    <div class="external-scores">
-                        ${scoresHtml}
+                    <div class="ficha-scroll-hint"><button class="feature-btn" type="button">Role para explorar <i class="fa-solid fa-angle-down" aria-hidden="true"></i></button></div>
+                    <div class="ficha-sections ${isTV ? 'ficha-series' : 'ficha-movie'}" inert>
+                        <section class="ficha-panel ficha-cast"><h3>Elenco</h3>${castMarkup}</section>
+                        ${isTV ? `<section class="ficha-panel ficha-episodes" aria-labelledby="ficha-episodes-title">
+                            <div class="episodes-toolbar"><h3 id="ficha-episodes-title">Episódios</h3><select class="season-select" id="seasonSelect_${id}" aria-label="Temporada" ${seasons.length ? '' : 'disabled'}>${seasons.map(season => `<option value="${Number(season.season_number)}">${safe(season.name)}</option>`).join('')}</select></div>
+                            <div class="episode-grid ficha-episode-list" id="episodeGrid_${id}" role="region" aria-label="Lista de episódios" tabindex="0">${seasons.length ? '' : '<p class="ficha-note">Temporadas não localizadas.</p>'}</div>
+                        </section>` : ''}
                     </div>
+                    <details class="expandable-details ficha-comments-source" data-id="${id}" data-type="${type}" hidden>
+                        <summary>Comentários e avaliações</summary>
+                        <div class="expandable-body"><div class="cinefia-comments-container" id="cinefiaCommentsBody-${type}-${id}"></div></div>
+                    </details>
+                </div>`;
 
-                    ${providersHtml}
-
-                    <div class="synopsis-section">
-                        <p class="modal-desc synopsis-collapsed">${overview}</p>
-                        ${overview.length > 0 ? `<button class="synopsis-more-btn" type="button" style="display:none" onclick="openSynopsisQuadrant()"><i class="fa-solid fa-expand"></i> Mostrar mais</button>` : ''}
-                    </div>
-
-                    <div class="modal-meta-grid">
-                        <div class="meta-item"><span>Lançamento</span> ${year}</div>
-                        <div class="meta-item"><span>Duração</span> ${duration}</div>
-                        <div class="meta-item"><span>Tipo</span> ${type === 'tv' ? 'Série de TV' : 'Filme'}</div>
-                        <div class="meta-item"><span>Status</span> ${status}</div>
-                    </div>
-
-                    <div class="feature-actions">
-                        <button class="favorite-detail-btn ${isFavorite(data.id, type) ? 'active' : ''}" onclick="toggleFavorite(${data.id}, '${type}')"><i class="fa-${isFavorite(data.id, type) ? 'solid' : 'regular'} fa-heart"></i> ${isFavorite(data.id, type) ? 'Na Minha Lista' : 'Adicionar à Minha Lista'}</button>
-                    </div>
-
-                    ${advancedHtml}
-                </div>
-            `;
-
-            requestAnimationFrame(refreshSynopsisControl);
-
-            // Os painéis abrem à direita; o modal principal continua rolável.
-            const expandableItems = Array.from(content.querySelectorAll('.expandable-details'));
-            expandableItems.forEach(details => {
-                details.addEventListener('toggle', () => {
-                    if (!details.open) {
-                        if (activeDetailSide?.details === details) closeDetailSidePanel();
-                        return;
-                    }
-                    expandableItems.forEach(other => {
-                        if (other !== details && other.open) other.open = false;
-                    });
-                    openDetailSidePanel(details);
-                });
+            const pin = content.querySelector('.ficha-pin');
+            const intro = content.querySelector('.ficha-intro');
+            const sections = content.querySelector('.ficha-sections');
+            const explore = content.querySelector('.ficha-scroll-hint button');
+            const commentsButton = content.querySelector('.ficha-comments-button');
+            const select = content.querySelector('.season-select');
+            const providerButton = content.querySelector('.ficha-providers-more');
+            let loadedEpisodes = false;
+            const onScroll = () => {
+                const revealed = content.scrollTop >= Math.min(62, Math.max(18, intro.offsetHeight * .12));
+                content.classList.toggle('ficha-explored', revealed);
+                sections.inert = !revealed;
+                commentsButton.tabIndex = revealed ? 0 : -1;
+                explore.tabIndex = revealed ? -1 : 0;
+                if (revealed && select?.value && !loadedEpisodes) {
+                    loadedEpisodes = true;
+                    void loadSeasonEpisodes(id, select.value);
+                }
+            };
+            content.onscroll = onScroll;
+            select?.addEventListener('change', () => void loadSeasonEpisodes(id, select.value));
+            explore.addEventListener('click', () => content.scrollTo({top: intro.offsetHeight - 10, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth'}));
+            commentsButton.addEventListener('click', () => {
+                const source = content.querySelector('.ficha-comments-source');
+                source.open = true;
+                openDetailSidePanel(source);
+                commentsButton.setAttribute('aria-expanded', 'true');
+                void loadCinefiaComments(id, type);
+                document.querySelector('#detailSideOverlay .detail-side-heading button')?.focus({preventScroll: true});
+            });
+            content.querySelector('.ficha-trailer').addEventListener('click', () => void openTrailer(id, title, type));
+            content.querySelector('.favorite-detail-btn').addEventListener('click', () => void toggleFavorite(id, type));
+            providerButton?.addEventListener('click', () => {
+                const expanded = pin.classList.toggle('ficha-streaming-wide');
+                content.querySelectorAll('[data-ficha-extra-provider]').forEach(provider => { provider.hidden = !expanded; });
+                providerButton.setAttribute('aria-expanded', String(expanded));
+                providerButton.innerHTML = expanded ? 'Recolher <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>' : `Ver todas (${view.providerCount}) <i class="fa-solid fa-arrow-right" aria-hidden="true"></i>`;
+            });
+            if (!isTV && !view.providerCount) {
+                const availability = content.querySelector('#ficha-availability');
+                void fichaNowPlaying().then(ids => { if (availability?.isConnected && ids.has(id)) availability.textContent = 'Em cartaz nos cinemas. Streaming não localizado no Brasil.'; });
+            }
+            fichaPinObserver?.disconnect();
+            if (typeof ResizeObserver === 'function') {
+                fichaPinObserver = new ResizeObserver(() => content.style.setProperty('--ficha-pin-height', `${pin.offsetHeight}px`));
+                fichaPinObserver.observe(pin);
+            }
+            requestAnimationFrame(() => {
+                if (!intro.isConnected) return;
+                refreshSynopsisControl();
+                onScroll();
+                if (content.closest('#detailsModal')?.classList.contains('active') && document.activeElement === document.body) content.querySelector('.ficha-back')?.focus({preventScroll:true});
             });
         }
 
-        async function handleEpisodesToggle(id, detailsEl) {
-            if (!detailsEl.open) return;
-            const select = document.getElementById(`seasonSelect_${id}`);
-            if (!select || !select.value) return;
-            const grid = document.getElementById(`episodeGrid_${id}`);
-            if (grid.dataset.loaded !== select.value) {
-                await loadSeasonEpisodes(id, select.value);
+        function closeProfileFromFicha() {
+            if (activeDetailSide?.details.classList.contains('ficha-comments-source')) {
+                document.getElementById('profileModal')?.classList.remove('active');
+                document.querySelector('#detailSideOverlay .detail-side-heading button')?.focus({preventScroll: true});
+                return;
             }
+            forceCloseModal();
         }
 
         async function loadSeasonEpisodes(tvId, seasonNumber) {
             const grid = document.getElementById(`episodeGrid_${tvId}`);
-            if (!grid || !TMDB_API_KEY || !seasonNumber) return;
+            if (!grid || !TMDB_API_KEY || !/^\d+$/.test(String(seasonNumber))) return;
 
+            const request = Symbol();
+            grid.cinefiaSeasonRequest = request;
             grid.innerHTML = '<div class="episode-loading"><div class="spinner"></div><p style="margin-top:10px;">Carregando episódios...</p></div>';
+            grid.scrollTop = 0;
             try {
-                const response = await fetch(`${BASE_URL}/tv/${tvId}/season/${seasonNumber}?api_key=${TMDB_API_KEY}&language=pt-BR`);
-                const data = await response.json();
+                const data = await fetchFichaJson(`${BASE_URL}/tv/${tvId}/season/${seasonNumber}?api_key=${TMDB_API_KEY}&language=pt-BR`);
+                if (!grid.isConnected || grid.cinefiaSeasonRequest !== request) return;
                 const episodes = data.episodes || [];
 
                 if (!episodes.length) {
@@ -1372,20 +1501,11 @@
                     const rating = ep.vote_average ? ep.vote_average.toFixed(1) : 'N/A';
                     const airDate = ep.air_date ? ep.air_date.split('-').reverse().join('/') : 'N/A';
                     const overview = ep.overview || 'Sem sinopse disponível.';
-                    return `
-                        <article class="episode-card">
-                            <img class="episode-img" src="${still}" alt="${ep.name || `Episódio ${ep.episode_number}`}" loading="lazy">
-                            <div class="episode-content">
-                                <div class="episode-number">EP. ${ep.episode_number}</div>
-                                <div class="episode-title">${ep.name || 'Episódio sem título'}</div>
-                                <div class="episode-meta"><span class="episode-rating"><i class="fa-solid fa-star"></i> ${rating}</span><span>${airDate}</span></div>
-                                <div class="episode-overview">${overview}</div>
-                            </div>
-                        </article>
-                    `;
+                    return fichaEpisodeCard(ep, still, rating, airDate, overview);
                 }).join('');
                 grid.dataset.loaded = String(seasonNumber);
             } catch (error) {
+                if (!grid.isConnected || grid.cinefiaSeasonRequest !== request) return;
                 console.error('Erro ao carregar episódios:', error);
                 grid.innerHTML = '<div class="episode-loading" style="color:#ef4444;">Não foi possível carregar os episódios.</div>';
             }
@@ -1529,16 +1649,18 @@
 
             if (totalPages > 1) {
                 container.style.display = 'flex';
-                info.innerText = `Página ${currentPage} de ${totalPages > 500 ? 500 : totalPages}`;
+                info.innerText = `Página ${currentPage} de ${totalPages}`;
                 btnPrev.disabled = currentPage === 1;
-                btnNext.disabled = currentPage >= (totalPages > 500 ? 500 : totalPages);
+                btnNext.disabled = currentPage >= totalPages;
             } else {
                 container.style.display = 'none';
             }
         }
 
         function changePage(delta) {
-            currentPage += delta;
+            const page = currentPage + delta;
+            if (page < 1 || page > totalPages) return;
+            currentPage = page;
             fetchContent();
             window.scrollTo({ top: 0, behavior: 'smooth' });
         }
@@ -1582,13 +1704,36 @@
             if (event.key === 'Escape') closeSynopsisQuadrant();
         }
 
-        function toggleMobileNavigation() {
-            const isOpen = document.body.classList.toggle('mobile-nav-open');
+        function setMobileNavigation(isOpen) {
+            document.body.classList.toggle('mobile-nav-open', isOpen);
             const button = document.querySelector('.mobile-nav-toggle');
             if (button) {
                 button.setAttribute('aria-expanded', String(isOpen));
                 button.setAttribute('aria-label', isOpen ? 'Fechar menu' : 'Abrir menu');
-                button.innerHTML = `<i class="fa-solid ${isOpen ? 'fa-xmark' : 'fa-ellipsis-vertical'}"></i>`;
+                button.innerHTML = `<i class="fa-solid ${isOpen ? 'fa-xmark' : 'fa-ellipsis-vertical'}" aria-hidden="true"></i>`;
+            }
+            const mobile = window.matchMedia('(max-width: 900px)').matches;
+            document.querySelector('.search-brand').setAttribute('aria-expanded', String(mobile ? isOpen : !document.body.classList.contains('desktop-nav-collapsed')));
+        }
+
+        function toggleMobileNavigation() {
+            setMobileNavigation(!document.body.classList.contains('mobile-nav-open'));
+        }
+
+        function toggleDesktopNavigation() {
+            const collapsed = document.body.classList.toggle('desktop-nav-collapsed');
+            document.querySelector('.desktop-nav-collapse').setAttribute('aria-expanded', String(!collapsed));
+            document.querySelector('.search-brand').setAttribute('aria-expanded', String(!collapsed));
+            if (cookiePreference === 'preferences') writeCinefiaCookie('cinefia_nav', collapsed ? 'collapsed' : 'expanded');
+            document.querySelector(collapsed ? '.search-brand' : '.desktop-nav-collapse').focus({preventScroll: true});
+        }
+
+        function openCinefiaNavigation() {
+            if (window.matchMedia('(max-width: 900px)').matches) {
+                setMobileNavigation(true);
+                document.querySelector('.mobile-nav-toggle').focus({preventScroll: true});
+            } else if (document.body.classList.contains('desktop-nav-collapsed')) {
+                toggleDesktopNavigation();
             }
         }
 
@@ -1620,8 +1765,25 @@
             activeDetailSide = null;
             if (marker.isConnected) marker.replaceWith(body);
             if (details.isConnected && details.open) details.open = false;
+            if (details.classList.contains('ficha-comments-source')) {
+                const button = document.querySelector('#detailsModal .ficha-comments-button');
+                button?.setAttribute('aria-expanded', 'false');
+                if (document.getElementById('detailsModal')?.classList.contains('active')) button?.focus({preventScroll: true});
+            }
         }
-        function detailSideEscape(event) { if (event.key === 'Escape') closeDetailSidePanel(); }
+        function detailSideEscape(event) {
+            if (event.key !== 'Escape') return;
+            if (activeDetailSide?.details.classList.contains('ficha-comments-source') && document.getElementById('profileModal')?.classList.contains('active')) closeProfileFromFicha();
+            else closeDetailSidePanel();
+        }
+
+        function refreshOpenFichaComments() {
+            const source = activeDetailSide?.details;
+            if (!source?.classList.contains('ficha-comments-source')) return;
+            const {id, type} = source.dataset;
+            const target = document.getElementById(`cinefiaCommentsBody-${type}-${id}`);
+            if (target && target.dataset.authId !== (cinefiaAuthUser?.id || '')) void loadCinefiaComments(Number(id), type);
+        }
 
         function closeModal(e) {
             if (e.target.classList.contains('modal-overlay')) {
@@ -1636,6 +1798,7 @@
         function forceCloseModal() {
             closeDetailSidePanel();
             document.getElementById('detailsModal')?.classList.remove('active');
+            fichaPinObserver?.disconnect();
             document.getElementById('settingsModal')?.classList.remove('active');
             document.getElementById('profileModal')?.classList.remove('active');
             document.getElementById('onboardingModal')?.classList.remove('active');
@@ -1660,7 +1823,7 @@
 
         function showError(msg) {
             const grid = document.getElementById('resultsGrid');
-            grid.innerHTML = `<div class="message-box" style="color: #ef4444">${msg}</div>`;
+            grid.innerHTML = `<div class="message-box" style="color: #ef4444">${escapeCinefiaHtml(msg)}</div>`;
         }
 
 
@@ -1669,6 +1832,8 @@
    ====================================================================== */
 let cinefiaSupabaseClient = null;
 let cinefiaAuthUser = null;
+let resolveCinefiaAuth;
+const cinefiaAuthStartup = new Promise(resolve => { resolveCinefiaAuth = resolve; });
 let cinefiaCloudFavorites = [];
 let cinefiaCloudFavoritesLoadedFor = null;
 let cinefiaCloudSyncMessage = 'Os comentários, avaliações e favoritos precisam das tabelas do Supabase configuradas.';
@@ -1688,6 +1853,76 @@ function escapeCinefiaHtml(value) {
     }[character]));
 }
 
+let cookiePreference;
+let cookieReturnFocus;
+const securityEventTimes = new Map();
+
+function reportCinefiaSecurityEvent(event) {
+    const now = Date.now();
+    if (securityEventTimes.has(event) && now - securityEventTimes.get(event) < 60000) return;
+    securityEventTimes.set(event, now);
+    console.warn('[Cinéfia / segurança]', event);
+}
+
+function readCinefiaCookie(name) {
+    try {
+        return document.cookie.split(';').map(part => part.trim()).find(part => part.startsWith(name + '='))?.slice(name.length + 1);
+    } catch {
+        return undefined;
+    }
+}
+
+function writeCinefiaCookie(name, value, age = 15552000) {
+    if (location.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(location.hostname)) return;
+    try {
+        document.cookie = `${name}=${value}; Max-Age=${age}; Path=/; SameSite=Lax${location.protocol === 'https:' ? '; Secure' : ''}`;
+    } catch {
+        // A escolha continua válida nesta página se o navegador bloquear o armazenamento.
+    }
+}
+
+function initCinefiaPrivacy() {
+    cookiePreference = readCinefiaCookie('cinefia_cookie_choice');
+    if (cookiePreference === 'preferences' && readCinefiaCookie('cinefia_nav') === 'collapsed') {
+        document.body.classList.add('desktop-nav-collapsed');
+        document.querySelector('.desktop-nav-collapse').setAttribute('aria-expanded', 'false');
+    }
+    setMobileNavigation(false);
+    document.getElementById('cookiePreferences').hidden = ['essentials', 'preferences'].includes(cookiePreference);
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && document.body.classList.contains('mobile-nav-open')) {
+            setMobileNavigation(false);
+            document.querySelector('.search-brand').focus({preventScroll: true});
+        }
+    });
+}
+
+function openCookiePreferences() {
+    cookieReturnFocus = document.activeElement;
+    setMobileNavigation(false);
+    const banner = document.getElementById('cookiePreferences');
+    banner.hidden = false;
+    banner.querySelector('button')?.focus();
+}
+
+function setCookiePreferences(remember) {
+    cookiePreference = remember ? 'preferences' : 'essentials';
+    writeCinefiaCookie('cinefia_cookie_choice', cookiePreference);
+    if (remember) {
+        writeCinefiaCookie('cinefia_nav', document.body.classList.contains('desktop-nav-collapsed') ? 'collapsed' : 'expanded');
+    } else {
+        writeCinefiaCookie('cinefia_nav', '', 0);
+    }
+    document.getElementById('cookiePreferences').hidden = true;
+    if (cookieReturnFocus?.getClientRects().length) cookieReturnFocus.focus();
+    else if (cookieReturnFocus) document.querySelector('.search-brand').focus({preventScroll: true});
+    cookieReturnFocus = null;
+}
+
+document.addEventListener('securitypolicyviolation', event => {
+    if (event.disposition === 'enforce') reportCinefiaSecurityEvent('csp-block');
+});
+
 function setCinefiaAuthMessage(message, kind = 'info') {
     cinefiaAuthMessage = message;
     cinefiaAuthMessageKind = kind;
@@ -1701,6 +1936,7 @@ function setCinefiaAuthMessage(message, kind = 'info') {
 function renderSupabaseAuthPanel() {
     const panel = document.getElementById('supabaseAuthPanel');
     if (!panel) return;
+    refreshOpenFichaComments();
 
     if (!cinefiaSupabaseClient) {
         panel.innerHTML = `
@@ -1767,7 +2003,7 @@ function renderSupabaseAuthPanel() {
     panel.innerHTML = `
         <h3 class="cinefia-auth-title"><i class="fa-solid fa-shield-halved" style="color:var(--accent)"></i> ${isSignup ? 'Criar conta Cinéfia' : 'Entrar na sua conta'}</h3>
         <p class="cinefia-auth-muted">${isSignup ? 'Preencha seus dados para criar sua conta e começar a usar o Cinéfia.' : 'Entre com seu e-mail e senha.'}</p>
-        <form class="cinefia-auth-form" onsubmit="${isSignup ? 'handleCinefiaSignup(event)' : 'handleCinefiaLogin(event)'}">
+        <form class="cinefia-auth-form" onsubmit="submitCinefiaAuthForm(event)">
             ${isSignup ? `
                 <button type="button" class="cinefia-auth-switch cinefia-auth-how-link" onclick="showCinefiaSignupInstructions()"><i class="fa-regular fa-circle-question"></i> Como funciona?</button>
                 <div class="cinefia-auth-field">
@@ -1792,7 +2028,7 @@ function renderSupabaseAuthPanel() {
             ` : ''}
             <div class="cinefia-auth-actions">
                 <button id="cinefiaAuthSubmit" type="submit" class="save-btn" style="margin-top:0;" ${cinefiaAuthBusy ? 'disabled' : ''}><i class="fa-solid ${isSignup ? 'fa-user-plus' : 'fa-right-to-bracket'}"></i> ${cinefiaAuthBusy ? 'Processando...' : (isSignup ? 'Cadastrar' : 'Entrar')}</button>
-                <button type="button" class="cinefia-auth-switch" onclick="setCinefiaAuthMode('${isSignup ? 'login' : 'signup'}')">${isSignup ? 'Já tenho uma conta — Entrar' : 'Ainda não tem conta? Cadastrar'}</button>
+                <button type="button" class="cinefia-auth-switch" data-auth-mode="${isSignup ? 'login' : 'signup'}" onclick="setCinefiaAuthMode(this.dataset.authMode)">${isSignup ? 'Já tenho uma conta — Entrar' : 'Ainda não tem conta? Cadastrar'}</button>
             </div>
             ${!isSignup ? '<button type="button" class="cinefia-auth-switch" style="align-self:flex-start;" onclick="requestCinefiaPasswordReset()">Esqueci minha senha</button>' : ''}
         </form>
@@ -1973,7 +2209,7 @@ function renderCinefiaCommentsMarkup(mediaType, tmdbId, rows) {
     const score = average === null ? '—' : String(Math.round(average * 10));
     const ratingCount = validRatings.length;
     const form = userId ? `
-        <form class="cinefia-comment-form" onsubmit="submitCinefiaComment(event, ${Number(tmdbId)}, '${mediaType}')">
+        <form class="cinefia-comment-form" data-title-id="${Number(tmdbId)}" data-title-type="${escapeCinefiaHtml(mediaType)}" onsubmit="submitCinefiaComment(event, Number(this.dataset.titleId), this.dataset.titleType)">
             <div class="cinefia-comment-form-heading">${myRow ? 'Atualize sua avaliação' : 'Avalie esta obra'}</div>
             <label for="cinefiaRating-${mediaType}-${Number(tmdbId)}">Sua nota (0 a 10)</label>
             <div class="cinefia-comment-form-row">
@@ -2011,21 +2247,26 @@ async function loadCinefiaComments(tmdbId, mediaType) {
     const containerId = `cinefiaCommentsBody-${mediaType}-${Number(tmdbId)}`;
     const target = document.getElementById(containerId);
     if (!target) return;
-    if (!cinefiaSupabaseClient) {
+    const request = Symbol();
+    target.cinefiaCommentRequest = request;
+    target.dataset.authId = cinefiaAuthUser?.id || '';
+    target.innerHTML = '<div class="cinefia-comments-loading"><div class="spinner"></div><p>Carregando comentários da comunidade…</p></div>';
+    const client = cinefiaSupabaseClient || await Promise.resolve(window.cinefiaSupabaseReady).catch(() => null);
+    if (!target.isConnected || target.cinefiaCommentRequest !== request) return;
+    if (!client) {
         target.innerHTML = '<p class="cinefia-comments-error">A conexão com o Supabase ainda não foi iniciada. Recarregue o site e confira se os arquivos foram publicados juntos.</p>';
         return;
     }
-    target.innerHTML = '<div class="cinefia-comments-loading"><div class="spinner"></div><p>Carregando comentários da comunidade…</p></div>';
-    const { data, error } = await cinefiaSupabaseClient
+    const { data, error } = await client
         .from('cinefia_comments')
         .select('id,user_id,display_name,body,rating,created_at,updated_at')
         .eq('media_type', mediaType)
         .eq('tmdb_id', Number(tmdbId))
         .order('created_at', { ascending: false })
         .limit(100);
-    if (!target.isConnected) return;
+    if (!target.isConnected || target.cinefiaCommentRequest !== request) return;
     if (error) {
-        console.warn('[Cinéfia] Não foi possível carregar comentários:', error);
+        reportCinefiaSecurityEvent('comment-read');
         target.innerHTML = `<div class="cinefia-comments-error"><i class="fa-solid fa-cloud-arrow-down"></i><p>${escapeCinefiaHtml(getCinefiaSupabaseTableErrorMessage(error, 'comentários e avaliações'))}</p><p>Depois de executar o SQL, feche e reabra esta área.</p></div>`;
         return;
     }
@@ -2034,6 +2275,7 @@ async function loadCinefiaComments(tmdbId, mediaType) {
 
 async function submitCinefiaComment(event, tmdbId, mediaType) {
     event.preventDefault();
+    if (!Number.isSafeInteger(tmdbId) || tmdbId <= 0 || !['movie', 'tv'].includes(mediaType)) return;
     if (!cinefiaSupabaseClient || !cinefiaAuthUser?.id) {
         const feedback = document.getElementById(`cinefiaCommentFeedback-${mediaType}-${Number(tmdbId)}`);
         if (feedback) feedback.textContent = 'Entre na sua conta antes de publicar.';
@@ -2042,7 +2284,7 @@ async function submitCinefiaComment(event, tmdbId, mediaType) {
     const ratingNode = document.getElementById(`cinefiaRating-${mediaType}-${Number(tmdbId)}`);
     const bodyNode = document.getElementById(`cinefiaComment-${mediaType}-${Number(tmdbId)}`);
     const feedback = document.getElementById(`cinefiaCommentFeedback-${mediaType}-${Number(tmdbId)}`);
-    const rating = Number(ratingNode?.value);
+    const rating = ratingNode?.value === '' ? NaN : Number(ratingNode?.value);
     const body = String(bodyNode?.value || '').trim();
     if (!Number.isFinite(rating) || rating < 0 || rating > 10 || Math.round(rating * 2) !== rating * 2) {
         if (feedback) feedback.textContent = 'Escolha uma nota de 0 a 10, em intervalos de 0,5.';
@@ -2065,7 +2307,7 @@ async function submitCinefiaComment(event, tmdbId, mediaType) {
         .upsert(row, { onConflict: 'user_id,media_type,tmdb_id' });
     if (error) {
         if (feedback) feedback.textContent = getCinefiaSupabaseTableErrorMessage(error, 'comentários e avaliações');
-        console.error('[Cinéfia] Erro ao salvar comentário/avaliação:', error);
+        reportCinefiaSecurityEvent('comment-write');
         return;
     }
     await loadCinefiaComments(Number(tmdbId), mediaType);
@@ -2076,6 +2318,7 @@ const CINEFIA_GUEST_EXPERIENCE_KEY = 'cinefia_guest_experience_v1';
 const CINEFIA_INTRO_SESSION_KEY = 'cinefia_intro_seen_v1';
 let cinefiaAccountPreferences = null;
 let cinefiaPreferencesLoadedFor = null;
+let cinefiaPreferencesRequest = null;
 const CINEFIA_PREFERENCE_GENRES = [
     [28, 'Ação'], [12, 'Aventura'], [16, 'Animação'], [35, 'Comédia'], [80, 'Crime'], [99, 'Documentário'],
     [18, 'Drama'], [10751, 'Família'], [14, 'Fantasia'], [36, 'História'], [27, 'Terror'], [10402, 'Música'],
@@ -2095,19 +2338,38 @@ function normalizeCinefiaPreferences(row = {}) {
 function cinefiaPreferenceLabel(list, id) { return list.find(([value]) => value === Number(id))?.[1] || ''; }
 
 async function loadCinefiaPreferences(user = cinefiaAuthUser) {
-    if (!user?.id || !cinefiaSupabaseClient) { cinefiaAccountPreferences = null; cinefiaPreferencesLoadedFor = null; return null; }
-    const { data, error } = await cinefiaSupabaseClient.from('cinefia_preferences').select('origin,purpose,genres,providers').eq('user_id', user.id).maybeSingle();
-    if (error) { console.warn('[Cinéfia] Preferências indisponíveis; execute a migração SQL:', error.message); cinefiaAccountPreferences = defaultCinefiaPreferences(); cinefiaPreferencesLoadedFor = user.id; return cinefiaAccountPreferences; }
-    cinefiaAccountPreferences = normalizeCinefiaPreferences(data || {});
-    cinefiaPreferencesLoadedFor = user.id;
-    return cinefiaAccountPreferences;
+    if (!user?.id || !cinefiaSupabaseClient) return null;
+    if (cinefiaPreferencesRequest?.id === user.id) return cinefiaPreferencesRequest.promise;
+    const request = {id: user.id};
+    request.promise = (async () => {
+        const {data, error} = await cinefiaSupabaseClient.from('cinefia_preferences').select('origin,purpose,genres,providers').eq('user_id', user.id).maybeSingle();
+        if (user.id !== cinefiaAuthUser?.id || request !== cinefiaPreferencesRequest) return null;
+        if (error) {
+            reportCinefiaSecurityEvent('preferences-read');
+            return null;
+        }
+        cinefiaAccountPreferences = normalizeCinefiaPreferences(data || {});
+        cinefiaPreferencesLoadedFor = user.id;
+        return cinefiaAccountPreferences;
+    })().finally(() => { if (request === cinefiaPreferencesRequest) cinefiaPreferencesRequest = null; });
+    cinefiaPreferencesRequest = request;
+    return request.promise;
+}
+
+async function getCinefiaPreferences(user) {
+    const preferences = cinefiaPreferencesLoadedFor === user.id ? cinefiaAccountPreferences : await loadCinefiaPreferences(user);
+    if (!preferences) throw new Error('Preferências indisponíveis');
+    return preferences;
 }
 
 async function saveCinefiaPreferences(preferences, feedbackNode) {
     if (!cinefiaSupabaseClient || !cinefiaAuthUser?.id) { if (feedbackNode) feedbackNode.textContent = 'Entre na sua conta para salvar suas preferências.'; return false; }
+    const userId = cinefiaAuthUser.id;
     const normalized = normalizeCinefiaPreferences(preferences);
-    const { error } = await cinefiaSupabaseClient.from('cinefia_preferences').upsert({ user_id: cinefiaAuthUser.id, ...normalized, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+    const { error } = await cinefiaSupabaseClient.from('cinefia_preferences').upsert({ user_id: userId, ...normalized, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+    if (userId !== cinefiaAuthUser?.id) return false;
     if (error) { if (feedbackNode) feedbackNode.textContent = getCinefiaSupabaseTableErrorMessage(error, 'preferências da Experiência Cinéfia'); return false; }
+    cinefiaPreferencesRequest = null;
     cinefiaAccountPreferences = normalized;
     cinefiaPreferencesLoadedFor = cinefiaAuthUser.id;
     if (feedbackNode) { feedbackNode.textContent = 'Preferências salvas com sucesso.'; feedbackNode.style.color = '#4ade80'; }
@@ -2190,27 +2452,32 @@ async function maybeStartCinefiaExperience(user) {
     }
 }
 
-function preferenceDiscoverUrl(type, page = 1, extra = '') {
-    const prefs = cinefiaAccountPreferences || defaultCinefiaPreferences();
-    const genreIds = prefs.genres.join('|');
-    const providerIds = prefs.providers.join('|');
-    const providerFilter = providerIds ? `&with_watch_providers=${providerIds}&watch_region=BR&with_watch_monetization_types=flatrate` : '';
-    const genreFilter = genreIds ? `&with_genres=${genreIds}` : '';
-    return `${BASE_URL}/discover/${type}?api_key=${TMDB_API_KEY}&language=pt-BR&sort_by=popularity.desc&vote_count.gte=30&page=${page}${genreFilter}${providerFilter}${extra}`;
+const TV_PREFERENCE_GENRES = new Map([[28, 10759], [12, 10759], [16, 16], [35, 35], [80, 80], [99, 99], [18, 18], [10751, 10751], [14, 10765], [9648, 9648], [878, 10765], [10752, 10768], [37, 37]]);
+
+function preferenceSources(preferences) {
+    const sources = [];
+    for (const type of ['movie', 'tv']) {
+        const genres = type === 'tv' ? preferences.genres.map(id => TV_PREFERENCE_GENRES.get(id)).filter(Boolean) : preferences.genres;
+        if (preferences.genres.length && !genres.length) continue;
+        const params = new URLSearchParams({api_key: TMDB_API_KEY, language: 'pt-BR', sort_by: 'popularity.desc', include_adult: 'false', 'vote_count.gte': '30'});
+        if (genres.length) params.set('with_genres', [...new Set(genres)].join('|'));
+        if (preferences.providers.length) {
+            params.set('with_watch_providers', preferences.providers.join('|'));
+            params.set('watch_region', 'BR');
+            params.set('with_watch_monetization_types', 'flatrate');
+        }
+        sources.push({url: `${BASE_URL}/discover/${type}?${params}`, type});
+    }
+    return sources;
 }
-async function fetchPreferenceDiscoverResults(limit = 24) {
-    if (!cinefiaAccountPreferences || (!cinefiaAccountPreferences.genres.length && !cinefiaAccountPreferences.providers.length)) return [];
-    const [movieData, tvData] = await Promise.all([fetch(preferenceDiscoverUrl('movie')).then(r => r.json()), fetch(preferenceDiscoverUrl('tv')).then(r => r.json())]);
-    const items = [...(movieData.results || []).map(item => ({ ...item, media_type: 'movie' })), ...(tvData.results || []).map(item => ({ ...item, media_type: 'tv' }))].filter(item => item.poster_path);
-    return items.sort((a, b) => (b.vote_average || 0) - (a.vote_average || 0)).slice(0, limit);
-}
-async function fetchPersonalizedHomeMix() {
-    const [personalized, generalData] = await Promise.all([fetchPreferenceDiscoverResults(16), fetch(`${BASE_URL}/trending/all/week?api_key=${TMDB_API_KEY}&language=pt-BR&page=1`).then(r => r.json())]);
-    const general = (generalData.results || []).filter(item => item.poster_path).map(item => ({ ...item, media_type: item.media_type || (item.title ? 'movie' : 'tv') }));
-    const seen = new Set(); const mixed = [];
-    [...personalized.slice(0, 16), ...general.slice(0, 8)].forEach(item => { const key = `${item.media_type}-${item.id}`; if (!seen.has(key)) { seen.add(key); mixed.push(item); } });
-    renderGrid(mixed.slice(0, 24));
-    totalPages = 1; updatePagination();
+
+async function fetchPersonalizedHomeMix(request) {
+    const [personalized, general] = await Promise.all([
+        catalogPage(preferenceSources(cinefiaAccountPreferences), 1, comparePopularity),
+        catalogPage([{url: `${BASE_URL}/trending/all/week?api_key=${TMDB_API_KEY}&language=pt-BR`}], 1)
+    ]);
+    const mixed = uniqueTitles([...personalized.items.slice(0, 20), ...general.items, ...personalized.items]);
+    showCatalogPage({items: mixed.slice(0, TITLES_PER_PAGE), pages: 500}, request);
 }
 
 async function initSupabaseAuth() {
@@ -2222,6 +2489,7 @@ async function initSupabaseAuth() {
         const { data, error } = await cinefiaSupabaseClient.auth.getSession();
         if (error) throw error;
         cinefiaAuthUser = data.session?.user || null;
+        resolveCinefiaAuth(true);
         renderSupabaseAuthPanel();
         if (cinefiaAuthUser) {
             await ensureCinefiaPrivateProfile(cinefiaAuthUser);
@@ -2243,15 +2511,24 @@ async function initSupabaseAuth() {
                 if (previousId !== (nextUser?.id || null)) {
                     cinefiaCloudFavorites = [];
                     cinefiaCloudFavoritesLoadedFor = null;
+                    cinefiaPreferencesRequest = null;
+                    cinefiaAccountPreferences = null;
+                    cinefiaPreferencesLoadedFor = null;
+                    if (currentMode === 'recommendations') setTimeout(() => {
+                        if (currentMode === 'recommendations') loadRecommendations();
+                    }, 0);
                 }
                 cinefiaAuthMessage = '';
                 cinefiaAuthMessageKind = 'info';
                 renderSupabaseAuthPanel();
                 if (nextUser) {
-                    void ensureCinefiaPrivateProfile(nextUser);
-                    void ensureCinefiaPublicProfile(nextUser);
-                    void loadCinefiaCloudFavorites();
-                    void maybeStartCinefiaExperience(nextUser);
+                    setTimeout(() => {
+                        if (nextUser.id !== cinefiaAuthUser?.id) return;
+                        void ensureCinefiaPrivateProfile(nextUser);
+                        void ensureCinefiaPublicProfile(nextUser);
+                        void loadCinefiaCloudFavorites();
+                        void maybeStartCinefiaExperience(nextUser);
+                    }, 0);
                 } else {
                     cinefiaAccountPreferences = null;
                     cinefiaPreferencesLoadedFor = null;
@@ -2262,12 +2539,17 @@ async function initSupabaseAuth() {
             cinefiaAuthSubscription = subscriptionData?.subscription || null;
         }
     } catch (error) {
-        console.error('Falha ao iniciar autenticação Supabase:', error);
+        resolveCinefiaAuth(false);
+        reportCinefiaSecurityEvent('auth-start');
         cinefiaAuthMessage = 'Não foi possível conectar ao Supabase. Confira a URL, a chave pública e sua conexão.';
         cinefiaAuthMessageKind = 'error';
         renderSupabaseAuthPanel();
         if (panel) panel.dataset.connection = 'error';
     }
+}
+
+function submitCinefiaAuthForm(event) {
+    return cinefiaAuthMode === 'signup' ? handleCinefiaSignup(event) : handleCinefiaLogin(event);
 }
 
 async function handleCinefiaLogin(event) {
@@ -2293,6 +2575,7 @@ async function handleCinefiaLogin(event) {
         renderSupabaseAuthPanel();
     } catch (error) {
         cinefiaAuthBusy = false;
+        if (error?.status === 429 || error?.code === 'over_request_rate_limit') reportCinefiaSecurityEvent('auth-rate-limit');
         setCinefiaAuthMessage(normalizeCinefiaAuthError(error, 'login'), 'error');
         setCinefiaAuthBusy(false);
     }
@@ -2314,7 +2597,9 @@ async function handleCinefiaSignup(event) {
     try {
         const { data: existingProfiles, error: usernameCheckError } = await cinefiaSupabaseClient
             .from('profiles')
-            .select('username');
+            .select('username')
+            .ilike('username', username.replace(/_/g, '\\_'))
+            .limit(1);
         if (usernameCheckError) throw usernameCheckError;
         const usernameTaken = (existingProfiles || []).some(profile =>
             String(profile.username || '').trim().toLowerCase() === username
@@ -2352,6 +2637,7 @@ async function handleCinefiaSignup(event) {
     } catch (error) {
         cinefiaAuthBusy = false;
         renderSupabaseAuthPanel();
+        if (error?.status === 429 || error?.code === 'over_request_rate_limit') reportCinefiaSecurityEvent('auth-rate-limit');
         setCinefiaAuthMessage(normalizeCinefiaAuthError(error, 'signup'), 'error');
     }
 }
