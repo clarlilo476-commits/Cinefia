@@ -434,6 +434,7 @@
         }
 
         async function fetchContent() {
+            document.getElementById('personResults').hidden = true;
             const grid = document.getElementById('resultsGrid');
             const pagination = document.getElementById('paginationContainer');
             if (!TMDB_API_KEY) return;
@@ -823,24 +824,22 @@
             const query = currentSearchQuery;
             try {
                 const personRes = await fetch(`${BASE_URL}/search/person?api_key=${TMDB_API_KEY}&language=pt-BR&query=${encodeURIComponent(query)}&page=1`);
+                if (!personRes.ok) throw new Error('Busca indisponível');
                 const personData = await personRes.json();
-                const topPerson = (personData.results || [])[0];
-                const normalizedQuery = normalizeSearchTerm(query);
-
-                if (Number.isSafeInteger(topPerson?.id) && normalizeSearchTerm(topPerson.name) === normalizedQuery) {
-                    const creditsRes = await fetch(`${BASE_URL}/person/${topPerson.id}/combined_credits?api_key=${TMDB_API_KEY}&language=pt-BR`);
-                    const creditsData = await creditsRes.json();
-                    const castItems = uniqueTitles(creditsData.cast || []).sort(comparePopularity);
-
-                    if (castItems.length) {
-                        if (request !== catalogRequest) return;
-                        document.getElementById('sectionTitle').innerText = `Elenco: ${topPerson.name}`;
-                        showCatalogPage({
-                            items: castItems.slice((page - 1) * TITLES_PER_PAGE, page * TITLES_PER_PAGE),
-                            pages: Math.ceil(castItems.length / TITLES_PER_PAGE)
-                        }, request);
-                        return;
-                    }
+                if (request !== catalogRequest || currentSearchQuery !== query) return;
+                const people = (personData.results || []).filter(p => Number.isSafeInteger(p.id) && p.id > 0 && !p.adult && p.known_for_department === 'Acting').slice(0, 12);
+                const section = document.getElementById('personResults');
+                section.replaceChildren();
+                section.hidden = !people.length;
+                if (people.length) {
+                    const heading = document.createElement('h2'); heading.textContent = 'Atores e atrizes'; section.append(heading);
+                    const list = document.createElement('div'); list.className = 'person-results-list'; section.append(list);
+                    people.forEach(person => {
+                        const button = document.createElement('button'); button.type = 'button'; button.className = 'person-result';
+                        const img = validTmdbImage(person.profile_path) ? `<img src="https://image.tmdb.org/t/p/w185${person.profile_path}" alt="" loading="lazy">` : '<span class="person-placeholder">●</span>';
+                        button.innerHTML = `${img}<span>${escapeCinefiaHtml(person.name)}</span>`;
+                        button.addEventListener('click', () => openPersonPage(person.id)); list.append(button);
+                    });
                 }
             } catch (error) {
                 if (request !== catalogRequest) return;
@@ -1362,10 +1361,10 @@
                 ['Orçamento', dollars(data.budget)], ['Receita', dollars(data.revenue)]
             ];
             const cast = (data.credits?.cast || []).slice(0, 12);
-            const castMarkup = cast.length ? `<div class="cast-grid">${cast.map(person => `<div class="cast-card">
+            const castMarkup = cast.length ? `<div class="cast-grid">${cast.map(person => `<button type="button" class="cast-card" data-person-id="${Number(person.id) || 0}">
                 ${person.profile_path ? `<img class="cast-img" src="https://image.tmdb.org/t/p/w185${safe(person.profile_path)}" alt="" loading="lazy">` : '<span class="ficha-cast-placeholder"><i class="fa-solid fa-user" aria-hidden="true"></i></span>'}
                 <div><div class="cast-name">${safe(person.name)}</div><div class="cast-character">${safe(person.character || 'Personagem não informado')}</div></div>
-            </div>`).join('')}</div>` : '<p class="ficha-note">Elenco não localizado.</p>';
+            </button>`).join('')}</div>` : '<p class="ficha-note">Elenco não localizado.</p>';
             const backdrop = /^\/[\w.-]+$/.test(data.backdrop_path || '') ? ` style="--ficha-backdrop:url(https://image.tmdb.org/t/p/w1280${data.backdrop_path})"` : '';
             const seasons = data.seasons || [];
 
@@ -1418,6 +1417,7 @@
                 </div>`;
 
             const pin = content.querySelector('.ficha-pin');
+            content.querySelectorAll('[data-person-id]').forEach(button => button.addEventListener('click', () => openPersonPage(Number(button.dataset.personId))));
             const intro = content.querySelector('.ficha-intro');
             const sections = content.querySelector('.ficha-sections');
             const explore = content.querySelector('.ficha-scroll-hint button');
@@ -1725,17 +1725,15 @@
 
         function toggleDesktopNavigation() {
             const collapsed = document.body.classList.toggle('desktop-nav-collapsed');
-            document.querySelector('.desktop-nav-collapse').setAttribute('aria-expanded', String(!collapsed));
             document.querySelector('.search-brand').setAttribute('aria-expanded', String(!collapsed));
             if (allowsCinefiaPreferenceCookies()) writeCinefiaCookie('cinefia_nav', collapsed ? 'collapsed' : 'expanded');
-            document.querySelector(collapsed ? '.search-brand' : '.desktop-nav-collapse').focus({preventScroll: true});
+            document.querySelector(collapsed ? '.search-brand' : '.sidebar .cinefia-nav-icon').focus({preventScroll: true});
         }
 
         function openCinefiaNavigation() {
             if (window.matchMedia('(max-width: 900px)').matches) {
-                setMobileNavigation(true);
-                document.querySelector('.mobile-nav-toggle').focus({preventScroll: true});
-            } else if (document.body.classList.contains('desktop-nav-collapsed')) {
+                toggleMobileNavigation();
+            } else {
                 toggleDesktopNavigation();
             }
         }
@@ -1818,6 +1816,72 @@
    AUTENTICAÇÃO SUPABASE — CONTA ONLINE (sem remover os perfis locais)
    ====================================================================== */
 let cinefiaSupabaseClient = null;
+
+// Filmografia abre sobre a ficha existente e mantém o catálogo intacto.
+let personRequest = 0;
+let personPreviousFocus = null;
+document.querySelector('#personPage .person-back').addEventListener('click', () => closePersonPage());
+async function openPersonPage(id) {
+    if (!Number.isSafeInteger(id) || id <= 0) return;
+    const page = document.getElementById('personPage');
+    const host = document.getElementById('personPageContent');
+    if (page.hidden) personPreviousFocus = document.activeElement;
+    page.hidden = false;
+    page.scrollTop = 0;
+    const request = ++personRequest;
+    host.innerHTML = '<div class="person-loading">Carregando filmografia…</div>';
+    page.querySelector('.person-back').focus({preventScroll: true});
+    try {
+        const data = await fetchCinefiaJson(`${BASE_URL}/person/${id}?api_key=${TMDB_API_KEY}&language=pt-BR&append_to_response=combined_credits`);
+        if (request !== personRequest || page.hidden) return;
+        const credits = uniqueTitles(data.combined_credits?.cast || []).sort(comparePopularity);
+        host.replaceChildren();
+        const profile = document.createElement('aside'); profile.className = 'person-profile';
+        const photo = validTmdbImage(data.profile_path) ? `<img src="https://image.tmdb.org/t/p/w500${data.profile_path}" alt="">` : '<div class="person-no-photo">Foto indisponível</div>';
+        profile.innerHTML = `${photo}<h1>${escapeCinefiaHtml(data.name || 'Pessoa')}</h1><p>Ator / atriz</p>`;
+        host.append(profile);
+        const sections = document.createElement('div'); sections.className = 'person-filmography'; host.append(sections);
+        for (const [type, label] of [['movie', 'Filmes'], ['tv', 'Séries']]) {
+            const section = document.createElement('section'); const heading = document.createElement('h2'); heading.textContent = label; section.append(heading);
+            const list = document.createElement('div'); list.className = 'person-titles';
+            const items = credits.filter(item => item.media_type === type);
+            if (!items.length) { const empty = document.createElement('p'); empty.textContent = `Nenhum título encontrado em ${label.toLowerCase()}.`; list.append(empty); }
+            items.forEach(item => {
+                const title = item.title || item.name || 'Sem título';
+                const button = document.createElement('button'); button.type = 'button'; button.className = 'person-title';
+                button.innerHTML = `<img src="${IMG_BASE_URL}${item.poster_path}" alt="" loading="lazy"><span>${escapeCinefiaHtml(title)}</span>`;
+                button.addEventListener('click', () => { closePersonPage(false); openDetails(item.id, type); });
+                list.append(button);
+            });
+            section.append(list); sections.append(section);
+        }
+    } catch (_) {
+        if (request === personRequest && !page.hidden) host.textContent = 'Não foi possível carregar a filmografia. Volte e tente novamente.';
+    }
+}
+function closePersonPage(restoreFocus = true) {
+    document.getElementById('personPage').hidden = true;
+    personRequest++;
+    if (restoreFocus && personPreviousFocus?.isConnected) personPreviousFocus.focus({preventScroll: true});
+}
+document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && !document.getElementById('personPage').hidden) { event.stopImmediatePropagation(); closePersonPage(); }
+}, true);
+
+// Um toque alterna o menu; pressionar por três segundos recarrega.
+document.querySelectorAll('.cinefia-nav-icon').forEach(button => {
+    let timer = null, held = false, keyboard = false;
+    const start = () => { if (timer) return; held = false; timer = setTimeout(() => { timer = null; held = true; location.reload(); }, 3000); };
+    const cancel = () => { clearTimeout(timer); timer = null; };
+    button.addEventListener('pointerdown', event => { if (event.button === 0) start(); });
+    button.addEventListener('pointerup', cancel);
+    button.addEventListener('pointercancel', cancel);
+    button.addEventListener('pointerleave', cancel);
+    button.addEventListener('keydown', event => { if ((event.key === ' ' || event.key === 'Enter') && !event.repeat) { keyboard = true; start(); } });
+    button.addEventListener('keyup', event => { if (keyboard && (event.key === ' ' || event.key === 'Enter')) { cancel(); keyboard = false; } });
+    button.addEventListener('blur', cancel);
+    button.addEventListener('click', event => { event.preventDefault(); if (held) { held = false; return; } openCinefiaNavigation(); });
+});
 let cinefiaAuthUser = null;
 let resolveCinefiaAuth;
 const cinefiaAuthStartup = new Promise(resolve => { resolveCinefiaAuth = resolve; });
@@ -1934,7 +1998,7 @@ function initCinefiaPrivacy() {
     if (cookiePreference === 'preferences') {
         const collapsed = readCinefiaCookie('cinefia_nav') === 'collapsed';
         document.body.classList.toggle('desktop-nav-collapsed', collapsed);
-        document.querySelector('.desktop-nav-collapse').setAttribute('aria-expanded', String(!collapsed));
+        document.querySelector('.search-brand').setAttribute('aria-expanded', String(!collapsed));
     } else {
         clearCinefiaPreferenceCookies();
     }
@@ -2004,7 +2068,7 @@ function renderCinefiaSettings() {
         const link = document.getElementById('navSettings');
         const trigger = link.getClientRects().length && getComputedStyle(link).visibility === 'visible'
             ? link
-            : document.querySelector(window.matchMedia('(max-width: 900px)').matches ? '.mobile-nav-toggle' : '.search-brand');
+            : document.querySelector('.search-brand');
         trigger?.focus({preventScroll: true});
     }
     renderCinefiaCookieSettings();
