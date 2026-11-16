@@ -637,6 +637,19 @@ body:has(#detailsModal[data-cinefia-sheet].side-panel-open) #profileModal { z-in
 }
 
 .main-content { min-width: 0; }
+.cinefia-discovery[hidden] { display: none; }
+.discovery-section { margin-bottom: 2.5rem; }
+.discovery-section h2 { font: 800 1.3rem var(--font-title); margin-bottom: 1rem; }
+.discovery-shell { position: relative; }
+.discovery-track { display:flex; gap:14px; overflow-x:auto; overscroll-behavior-x:contain; scroll-snap-type:x proximity; padding: 3px 2px 12px; scrollbar-color:#000 #000; }
+.discovery-card { flex:0 0 clamp(135px, 15vw, 190px); border:0; padding:0; text-align:left; background:transparent; color:#fff; font:700 .9rem var(--font-ui); cursor:pointer; scroll-snap-align:start; }
+.discovery-card img { display:block; width:100%; aspect-ratio:2/3; object-fit:cover; border-radius:10px; margin-bottom:8px; }
+.discovery-card:focus-visible, .discovery-arrow:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+.discovery-arrow { position:absolute; top:35%; z-index:2; width:40px; height:40px; border:1px solid #ffffff55; border-radius:50%; background:#111d; color:#fff; font-size:1.7rem; cursor:pointer; }
+.discovery-prev { left:4px; } .discovery-next { right:4px; }
+.discovery-arrow:disabled { opacity:.3; cursor:default; }
+.discovery-empty { color:var(--text-muted); margin: 0 0 1.5rem; line-height:1.5; }
+@media(max-width:650px) { .discovery-card { flex-basis:42%; } }
 .desktop-nav-collapse { align-self: flex-start; font-size: .76rem; }
 .cinefia-nav-icon { border: 0; background: transparent; color: inherit; cursor: pointer; touch-action: manipulation; }
 .cinefia-nav-icon:focus-visible, .person-page button:focus-visible, .person-result:focus-visible, .cast-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
