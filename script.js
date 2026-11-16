@@ -144,12 +144,13 @@
 
                 searchTimeout = setTimeout(() => {
                     if (query.length > 2) {
-                        const genreConfig = matchGenreSearch(query);
+                        const genreConfig = query.trim().split(/\s+/).length <= 3 ? matchGenreSearch(query) : null;
                         currentPage = 1;
                         currentSearchQuery = query;
                         hideCategories();
                         document.querySelector('.hero').style.display = 'none';
                         if (genreConfig) {
+                            recentDiscoveryGenre = genreConfig.movieGenre || null;
                             currentMode = 'genresearch';
                             currentGenreSearch = genreConfig;
                             document.getElementById('sectionTitle').innerText = `Melhores de ${genreConfig.label}`;
@@ -434,6 +435,10 @@
         }
 
         async function fetchContent() {
+            const discovery = document.getElementById('cinefiaDiscovery');
+            discovery.hidden = currentMode !== 'trending' || currentPage !== 1;
+            if (!discovery.hidden) void renderDiscovery();
+            else { discovery.replaceChildren(); discoveryRequest++; }
             document.getElementById('personResults').hidden = true;
             const grid = document.getElementById('resultsGrid');
             const pagination = document.getElementById('paginationContainer');
@@ -848,7 +853,21 @@
             // Busca padrão por título (comportamento original) quando não é reconhecido como ator/atriz.
             try {
                 const url = `${BASE_URL}/search/multi?api_key=${TMDB_API_KEY}&language=pt-BR&query=${encodeURIComponent(query)}`;
-                showCatalogPage(await catalogPage([{url}], page), request);
+                const exact = await catalogPage([{url}], page);
+                if (request !== catalogRequest) return;
+                if (page === 1 && exact.items.length < 8) {
+                    const expanded = await expandedSearch(query, exact.items);
+                    if (request !== catalogRequest || currentSearchQuery !== query) return;
+                    if (expanded.length > exact.items.length) {
+                        searchFallback = {query, items: expanded};
+                        showCatalogPage({items: expanded.slice(0, TITLES_PER_PAGE), pages: Math.ceil(expanded.length / TITLES_PER_PAGE)}, request);
+                        showCatalogNotice('Sugestões por nome, palavras-chave e informações encontradas. Os resultados podem ser aproximados.');
+                        return;
+                    }
+                }
+                if (page > 1 && searchFallback?.query === query) {
+                    showCatalogPage({items: searchFallback.items.slice((page - 1) * TITLES_PER_PAGE, page * TITLES_PER_PAGE), pages: Math.ceil(searchFallback.items.length / TITLES_PER_PAGE)}, request);
+                } else showCatalogPage(exact, request);
             } catch (error) {
                 if (request === catalogRequest) showError('Erro de conexão. Verifique sua API Key.');
             }
@@ -1133,7 +1152,7 @@
 
                 const card = document.createElement('div');
                 card.className = 'card';
-                card.onclick = () => openDetails(item.id, mediaType);
+                card.onclick = () => { rememberDiscoveryTitle(item); openDetails(item.id, mediaType); };
 
                 card.innerHTML = `
                     <div class="card-img-wrapper">
@@ -1816,6 +1835,120 @@
    AUTENTICAÇÃO SUPABASE — CONTA ONLINE (sem remover os perfis locais)
    ====================================================================== */
 let cinefiaSupabaseClient = null;
+
+// Descoberta limitada aos dados retornados pelo TMDB nesta sessão.
+let discoveryRequest = 0;
+let recentDiscoveryTitle = null;
+let recentDiscoveryGenre = null;
+let searchFallback = null;
+function rememberDiscoveryTitle(item) {
+    if (item && Number.isSafeInteger(item.id)) recentDiscoveryTitle = {id: item.id, type: item.media_type || (item.title ? 'movie' : 'tv'), genres: item.genre_ids || []};
+}
+function searchWords(query) {
+    const stop = new Set(['filme','filmes','serie','series','sobre','uma','uns','com','que','para','onde','qual','quem','pelo','pela','esse','essa','como','quando','por','dos','das','sua','seu','num','uma','the','and','que','dia']);
+    return [...new Set(normalizeSearchTerm(query).replace(/[^a-z0-9\s]/g,' ').split(/\s+/).filter(w => w.length >= 4 && !stop.has(w)))].slice(0, 4);
+}
+function wordDistance(a, b) {
+    if (Math.abs(a.length - b.length) > 2) return 9;
+    let prev = Array.from({length:b.length+1}, (_,i)=>i);
+    for (let i=1;i<=a.length;i++) { const next=[i]; for (let j=1;j<=b.length;j++) next[j]=Math.min(next[j-1]+1,prev[j]+1,prev[j-1]+(a[i-1]===b[j-1]?0:1)); prev=next; }
+    return prev[b.length];
+}
+async function expandedSearch(query, exact) {
+    const words = searchWords(query); if (!words.length) return exact;
+    const params = text => `api_key=${TMDB_API_KEY}&language=pt-BR&include_adult=false&query=${encodeURIComponent(text)}`;
+    const terms = [...words.slice(0,3), ...(words.length === 1 && words[0].length > 5 ? [words[0].slice(0,-2)] : [])];
+    const searches = terms.map(word => fetchCinefiaJson(`${BASE_URL}/search/multi?${params(word)}`).catch(() => ({results:[]})));
+    const keywords = words.slice(0,2).map(word => fetchCinefiaJson(`${BASE_URL}/search/keyword?${params(word)}`).catch(() => ({results:[]})));
+    const responses = await Promise.all([...searches, ...keywords]);
+    let candidates = [...exact, ...responses.slice(0,searches.length).flatMap(r => r.results || [])];
+    const ids = [...new Set(responses.slice(searches.length).flatMap(r => (r.results || []).slice(0,2).map(k => k.id)).filter(Number.isSafeInteger))].slice(0,4);
+    if (ids.length) {
+        const batches = await Promise.all(['movie','tv'].map(type => fetchCinefiaJson(`${BASE_URL}/discover/${type}?api_key=${TMDB_API_KEY}&language=pt-BR&include_adult=false&sort_by=popularity.desc&with_keywords=${ids.join('%7C')}`).then(d => tagTitles(d.results || [],type)).catch(() => [])));
+        candidates.push(...batches.flat());
+    }
+    candidates = uniqueTitles(tagTitles(candidates));
+    const top = candidates.slice(0, 12);
+    const credits = await Promise.all(top.map(item => fetchCinefiaJson(`${BASE_URL}/${item.media_type}/${item.id}/credits?api_key=${TMDB_API_KEY}&language=pt-BR`).catch(() => ({}))));
+    const characters = new Map(top.map((item,i) => [`${item.media_type}-${item.id}`, (credits[i].cast || []).map(c => c.character || '').join(' ')]));
+    const scores = item => {
+        const text = normalizeSearchTerm([item.title,item.name,item.original_title,item.original_name,item.overview,characters.get(`${item.media_type}-${item.id}`)].join(' '));
+        const tokens = text.split(/[^a-z0-9]+/).filter(Boolean);
+        return words.reduce((sum,w) => sum + (tokens.some(t => t === w || (w.length >= 5 && wordDistance(t,w) <= 1)) ? 1 : 0), 0);
+    };
+    return candidates.sort((a,b) => scores(b)-scores(a) || comparePopularity(a,b));
+}
+
+async function renderDiscovery() {
+    const host = document.getElementById('cinefiaDiscovery');
+    const request = ++discoveryRequest;
+    host.replaceChildren();
+    const row = (label, items, loop = false) => {
+        const section = document.createElement('section'); section.className = 'discovery-section';
+        const heading = document.createElement('h2'); heading.textContent = label; section.append(heading);
+        if (!items.length) { const p=document.createElement('p'); p.className='discovery-empty'; p.textContent='Nenhuma sugestão encontrada no momento.'; section.append(p); host.append(section); return; }
+        const shell = document.createElement('div'); shell.className='discovery-shell';
+        const track = document.createElement('div'); track.className='discovery-track'; track.tabIndex=0; track.setAttribute('aria-label', label);
+        items.forEach(item => {
+            const button=document.createElement('button'); button.type='button'; button.className='discovery-card';
+            button.innerHTML=`<img src="${IMG_BASE_URL}${item.poster_path}" alt="" loading="lazy"><span>${escapeCinefiaHtml(item.title || item.name || 'Sem título')}</span>`;
+            button.addEventListener('click', () => { rememberDiscoveryTitle(item); openDetails(item.id,item.media_type); }); track.append(button);
+        });
+        const prev=document.createElement('button'), next=document.createElement('button');
+        prev.type=next.type='button'; prev.className='discovery-arrow discovery-prev'; next.className='discovery-arrow discovery-next'; prev.textContent='‹'; next.textContent='›'; prev.setAttribute('aria-label','Anterior'); next.setAttribute('aria-label','Próximos títulos');
+        let unlocked=false;
+        const step=()=>track.firstElementChild?.getBoundingClientRect().width+14 || 190;
+        const update=()=>{ if(track.scrollLeft>=step()-2) unlocked=true; prev.disabled=!unlocked || (!loop && track.scrollLeft<=1); next.disabled=!loop && track.scrollLeft>=track.scrollWidth-track.clientWidth-2; };
+        prev.addEventListener('click',()=>{if (!unlocked) return; if (loop && track.scrollLeft<=1) track.scrollTo({left:track.scrollWidth,behavior:'smooth'}); else track.scrollBy({left:-step(),behavior:'smooth'});});
+        next.addEventListener('click',()=>{if(loop && track.scrollLeft>=track.scrollWidth-track.clientWidth-2) track.scrollTo({left:0,behavior:'smooth'}); else track.scrollBy({left:step(),behavior:'smooth'});});
+        track.addEventListener('scroll',update,{passive:true});
+        track.addEventListener('wheel', e => { if (!matchMedia('(hover: hover)').matches || !e.deltaY) return; e.preventDefault(); if (e.deltaY < 0 && !unlocked) return; if (loop && e.deltaY > 0 && track.scrollLeft >= track.scrollWidth-track.clientWidth-2) track.scrollTo({left:0,behavior:'smooth'}); else if (loop && e.deltaY < 0 && track.scrollLeft <= 1 && unlocked) track.scrollTo({left:track.scrollWidth,behavior:'smooth'}); else track.scrollLeft += e.deltaY; },{passive:false});
+        shell.append(prev,track,next); section.append(shell); host.append(section); update();
+    };
+    try {
+        const favorite = getCurrentFavoriteItems()[0];
+        const seed = recentDiscoveryTitle || (favorite && {id:Number(favorite.id),type:favorite.type});
+        const [pages, detail] = await Promise.all([
+            Promise.all([1,2,3].map(page => fetchCinefiaJson(`${BASE_URL}/trending/movie/week?api_key=${TMDB_API_KEY}&language=pt-BR&page=${page}`).catch(() => ({results:[]})))),
+            seed ? fetchCinefiaJson(`${BASE_URL}/${seed.type}/${seed.id}?api_key=${TMDB_API_KEY}&language=pt-BR`).catch(()=>({})) : Promise.resolve({})
+        ]);
+        if(request!==discoveryRequest || host.hidden) return;
+        const desiredGenres = new Set(recentDiscoveryGenre ? [recentDiscoveryGenre] : (detail.genres || []).map(g => g.id));
+        const shuffled = cinefiaShuffle(uniqueTitles(tagTitles(pages.flatMap(p=>p.results||[]),'movie')));
+        const matches = shuffled.filter(item => (item.genre_ids || []).some(id => desiredGenres.has(id)));
+        const popular = uniqueTitles([...matches, ...shuffled]).slice(0,24);
+        row('Em alta nesta semana',popular,true);
+        if (!seed && recentDiscoveryGenre) {
+            const params=new URLSearchParams({api_key:TMDB_API_KEY,language:'pt-BR',sort_by:'popularity.desc',with_genres:String(recentDiscoveryGenre)});
+            const genreResults=await fetchCinefiaJson(`${BASE_URL}/discover/movie?${params}`).catch(()=>({results:[]}));
+            if(request!==discoveryRequest || host.hidden) return;
+            row('Parecidos com o gênero pesquisado',uniqueTitles(tagTitles(genreResults.results||[],'movie')).slice(0,20));
+            const providers = cinefiaAuthUser && cinefiaAccountPreferences?.providers || [];
+            if (providers.length) {
+                params.set('watch_region','BR'); params.set('with_watch_monetization_types','flatrate'); params.set('with_watch_providers',providers.join('|'));
+                const results=await fetchCinefiaJson(`${BASE_URL}/discover/movie?${params}`).catch(()=>({results:[]}));
+                if(request!==discoveryRequest || host.hidden) return;
+                row('Disponíveis nos seus streamings',uniqueTitles(tagTitles(results.results||[],'movie')).slice(0,20));
+            } else { const p=document.createElement('p'); p.className='discovery-empty'; p.textContent='Entre na conta e selecione seus serviços em Experiência Cinéfia para ver sugestões nos seus streamings.'; host.append(p); }
+            return;
+        }
+        if (!seed) { const p=document.createElement('p'); p.className='discovery-empty'; p.textContent='Pesquise um gênero ou adicione títulos à Minha Lista para receber sugestões personalizadas.'; host.append(p); return; }
+        const similar = await fetchCinefiaJson(`${BASE_URL}/${seed.type}/${seed.id}/recommendations?api_key=${TMDB_API_KEY}&language=pt-BR`).catch(()=>({results:[]}));
+        if(request!==discoveryRequest || host.hidden) return;
+        row('Parecidos com o que você gosta',uniqueTitles(tagTitles(similar.results||[],seed.type)).slice(0,20));
+        const providers = cinefiaAuthUser && cinefiaAccountPreferences?.providers || [];
+        if (providers.length) {
+            const genres=(detail.genres||[]).map(g=>g.id).filter(Number.isSafeInteger).slice(0,3);
+            const params=new URLSearchParams({api_key:TMDB_API_KEY,language:'pt-BR',watch_region:'BR',with_watch_monetization_types:'flatrate',with_watch_providers:providers.join('|'),sort_by:'popularity.desc'});
+            if(genres.length) params.set('with_genres',genres.join('|'));
+            const results=await fetchCinefiaJson(`${BASE_URL}/discover/${seed.type}?${params}`).catch(()=>({results:[]}));
+            if(request!==discoveryRequest || host.hidden) return;
+            row('Disponíveis nos seus streamings',uniqueTitles(tagTitles(results.results||[],seed.type)).slice(0,20));
+        } else {
+            const notice=document.createElement('p'); notice.className='discovery-empty'; notice.textContent='Para sugestões nos seus streamings, entre na conta e selecione os serviços em Experiência Cinéfia.'; host.append(notice);
+        }
+    } catch { if(request===discoveryRequest && !host.hidden) { host.textContent='Não foi possível carregar as sugestões agora.'; } }
+}
 
 // Filmografia abre sobre a ficha existente e mantém o catálogo intacto.
 let personRequest = 0;
