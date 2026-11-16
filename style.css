@@ -638,6 +638,31 @@ body:has(#detailsModal[data-cinefia-sheet].side-panel-open) #profileModal { z-in
 
 .main-content { min-width: 0; }
 .desktop-nav-collapse { align-self: flex-start; font-size: .76rem; }
+.cinefia-nav-icon { border: 0; background: transparent; color: inherit; cursor: pointer; touch-action: manipulation; }
+.cinefia-nav-icon:focus-visible, .person-page button:focus-visible, .person-result:focus-visible, .cast-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.cast-card { width: 100%; color: inherit; text-align: left; font: inherit; cursor: pointer; }
+.cast-card:hover { border-color: var(--accent); }
+.person-results { margin-bottom: 2rem; }
+.person-results[hidden], .person-page[hidden] { display: none !important; }
+.person-results h2, .person-filmography h2 { font: 800 1.35rem var(--font-title); margin-bottom: 1rem; }
+.person-results-list { display: flex; gap: 12px; overflow-x: auto; padding: 3px 3px 12px; }
+.person-result { flex: 0 0 116px; background: var(--bg-panel); border: 1px solid #ffffff1a; border-radius: 10px; padding: 8px; color: white; font: 700 .85rem var(--font-ui); cursor: pointer; text-align: left; }
+.person-result img, .person-placeholder { width: 100%; aspect-ratio: 2/3; object-fit: cover; border-radius: 6px; background: #25262c; display: grid; place-items: center; margin-bottom: 8px; }
+.person-result:hover { border-color: var(--accent); }
+.person-page { position: fixed; inset: 0; z-index: 3000; overflow-y: auto; background: #0c0d10; color: white; padding: 28px clamp(18px, 4vw, 64px) 60px; }
+.person-back { background: #25262c; color: white; border: 1px solid #ffffff24; border-radius: 8px; padding: 10px 16px; font-weight: 700; cursor: pointer; }
+.person-back:hover { background: var(--accent); }
+.person-page-content { display: grid; grid-template-columns: minmax(180px, 280px) minmax(0, 1fr); gap: clamp(24px, 4vw, 60px); max-width: 1500px; margin: 28px auto; }
+.person-profile img, .person-no-photo { width: 100%; aspect-ratio: 2/3; object-fit: cover; border-radius: 14px; background: #22242a; }
+.person-no-photo { display: grid; place-items: center; color: #aaa; }
+.person-profile h1 { color: var(--accent); font: 800 clamp(1.4rem, 2.4vw, 2rem) var(--font-title); margin: 18px 0 8px; }
+.person-profile p, .person-titles p { color: var(--text-muted); }
+.person-filmography section + section { margin-top: 38px; }
+.person-titles { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 18px; }
+.person-title { min-width: 0; padding: 0; border: 0; background: transparent; text-align: left; color: white; font: 700 .9rem var(--font-ui); cursor: pointer; }
+.person-title img { width: 100%; aspect-ratio: 2/3; object-fit: cover; border-radius: 10px; display: block; margin-bottom: 8px; transition: transform .2s; }
+.person-title:hover img { transform: translateY(-4px); }
+@media (max-width: 600px) { .person-page-content { grid-template-columns: 1fr; gap: 26px; } .person-profile { display: grid; grid-template-columns: 105px 1fr; gap: 10px 18px; align-items: end; } .person-profile img, .person-no-photo { grid-row: span 2; } .person-profile h1 { margin: 0; } .person-profile p { align-self: start; } .person-titles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .search-brand { display: none; border: 0; background: transparent; padding: 5px; min-width: 38px; cursor: pointer; }
 .search-brand .brand-icon-3d { font-size: 1.4rem; }
 .results-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px 20px; flex-wrap: wrap; }
