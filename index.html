@@ -153,16 +153,13 @@
         <p>Organizando seus filmes e séries favoritos...</p>
     </div>
 
-    <button class="mobile-nav-toggle" type="button" aria-label="Abrir navegação" aria-controls="cinefiaSidebar" aria-expanded="false" onclick="toggleMobileNavigation()"><i class="fa-solid fa-ellipsis-vertical" aria-hidden="true"></i></button>
-
     <aside class="sidebar" id="cinefiaSidebar">
-        <a href="#" class="brand" onclick="loadHome()">
-            <div class="brand-icon-wrapper">
+        <div class="brand">
+            <button type="button" class="brand-icon-wrapper cinefia-nav-icon" aria-label="Alternar navegação. Segure por três segundos para recarregar" aria-controls="cinefiaSidebar">
                 <i class="fa-solid fa-film brand-icon-3d"></i>
-            </div>
+            </button>
             <span class="brand-name">Cinéfia</span>
-        </a>
-        <button class="feature-btn desktop-nav-collapse" type="button" aria-controls="cinefiaSidebar" aria-expanded="true" onclick="toggleDesktopNavigation()"><i class="fa-solid fa-angles-left" aria-hidden="true"></i> Recolher navegação</button>
+        </div>
 
         <nav class="nav-menu">
             <div class="nav-title">Navegação</div>
@@ -195,10 +192,10 @@
         </header>
 
         <section class="search-container">
-            <button class="search-brand" type="button" aria-label="Abrir navegação Cinéfia" aria-controls="cinefiaSidebar" aria-expanded="false" onclick="openCinefiaNavigation()"><i class="fa-solid fa-film brand-icon-3d" aria-hidden="true"></i></button>
+            <button class="search-brand cinefia-nav-icon" type="button" aria-label="Alternar navegação. Segure por três segundos para recarregar" aria-controls="cinefiaSidebar" aria-expanded="false"><i class="fa-solid fa-film brand-icon-3d" aria-hidden="true"></i></button>
             <div class="search-box">
                 <i class="fa-solid fa-magnifying-glass"></i>
-                <input type="text" id="searchInput" placeholder="Buscar filmes, séries ou animes..." autocomplete="off">
+                <input type="text" id="searchInput" placeholder="Buscar filmes, séries ou atores..." autocomplete="off">
             </div>
             <button class="feature-btn filter-toggle" id="filterToggleBtn" onclick="toggleFilters()"><i class="fa-solid fa-sliders"></i> Filtros</button>
 
@@ -290,6 +287,7 @@
         </section>
 
         <section class="results-section">
+            <section id="personResults" class="person-results" hidden aria-label="Atores e atrizes encontrados"></section>
             <div class="results-heading">
                 <h2 class="section-title" id="sectionTitle">Lançamentos Populares</h2>
                 <button class="feature-btn" id="renewRecommendations" type="button" onclick="renewCinefiaRecommendations()" hidden><i class="fa-solid fa-rotate" aria-hidden="true"></i> Renovar sugestões</button>
@@ -304,6 +302,11 @@
             </div>
         </section>
     </main>
+
+    <section id="personPage" class="person-page" role="dialog" aria-modal="true" aria-label="Filmografia" hidden>
+        <button type="button" class="person-back">← Voltar</button>
+        <div id="personPageContent" class="person-page-content" role="status"></div>
+    </section>
 
     <!-- MODAL DE DETALHES -->
     <div class="modal-overlay" id="detailsModal" data-cinefia-sheet onclick="closeModal(event)">
@@ -393,6 +396,10 @@
                 <div class="settings-card settings-guide">
                     <h3>Encontre um filme, série ou anime</h3>
                     <p>Digite o título na busca. Para explorar sem um nome em mente, abra Em Alta, Filmes, Séries ou Categorias. Use <strong>Filtros</strong> para combinar gênero, ano, nota, idioma e ordem dos resultados. Clique em <strong>Aplicar</strong> para atualizar a lista.</p>
+                    <h3>Pesquise por ator ou atriz</h3>
+                    <p>Digite o nome na busca e selecione uma pessoa encontrada para ver seus filmes e séries. Você também pode tocar no nome ou na foto de alguém no elenco de uma ficha.</p>
+                    <h3>Abra e recolha a navegação</h3>
+                    <p>Toque no ícone do Cinéfia para abrir ou recolher o menu. Para recarregar a página, mantenha o ícone pressionado por três segundos.</p>
                     <h3>Consulte a ficha e veja onde assistir</h3>
                     <p>Clique em um pôster para abrir a ficha. Ali você encontra a sinopse, as avaliações, o elenco e, quando disponíveis, os serviços de streaming no Brasil. Abra os blocos de informações e episódios para ver mais detalhes. O trailer é carregado quando você abre o player.</p>
                     <h3>Monte a sua lista</h3>
